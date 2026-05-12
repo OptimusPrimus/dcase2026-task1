@@ -137,47 +137,49 @@ def evaluate_fold(
 ) -> dict[str, Any]:
     test_subset = Subset(dataset, test_indices)
     limit = len(test_subset) if max_test_items is None else min(len(test_subset), max_test_items)
-    predictions: list[dict[str, Any]] = []
     true_labels: list[int] = []
     pred_labels: list[int] = []
-
-    for subset_index in range(limit):
-        item = test_subset[subset_index]
-        prediction = model.predict(item, candidate_classes)
-        row = {
-            "fold": fold_index,
-            "sound_id": item["sound_id"],
-            "source_dataset": item["source_dataset"],
-            "audio_path": item["audio_path"],
-            "title": item["title"],
-            "tags": item["tags"],
-            "description": item["description"],
-            "target_class_idx": int(item["class_idx"]),
-            "target_class": item["class"],
-            "predicted_class_idx": prediction.predicted_class_idx,
-            "predicted_class": prediction.predicted_class_name,
-            "parsed_label": prediction.parsed_label,
-            "raw_response": prediction.raw_response,
-            "final_response": prediction.final_response,
-            "reasoning": prediction.reasoning,
-            "correct": prediction.predicted_class_idx == int(item["class_idx"]),
-        }
-        predictions.append(row)
-        true_labels.append(int(item["class_idx"]))
-        pred_labels.append(
-            -1 if prediction.predicted_class_idx is None else int(prediction.predicted_class_idx)
-        )
-
-    accuracy = accuracy_score(true_labels, pred_labels) if predictions else 0.0
     output_dir.mkdir(parents=True, exist_ok=True)
     predictions_path = output_dir / f"fold_{fold_index:02d}_predictions.jsonl"
+
     with predictions_path.open("w", encoding="utf-8") as handle:
-        for row in predictions:
+        for subset_index in range(limit):
+            item = test_subset[subset_index]
+            prediction = model.predict(item, candidate_classes)
+            row = {
+                "fold": fold_index,
+                "subset_index": subset_index,
+                "sound_id": item["sound_id"],
+                "source_dataset": item["source_dataset"],
+                "audio_path": item["audio_path"],
+                "title": item["title"],
+                "tags": item["tags"],
+                "description": item["description"],
+                "target_class_idx": int(item["class_idx"]),
+                "target_class": item["class"],
+                "predicted_class_idx": prediction.predicted_class_idx,
+                "predicted_class": prediction.predicted_class_name,
+                "parsed_label": prediction.parsed_label,
+                "raw_response": prediction.raw_response,
+                "final_response": prediction.final_response,
+                "reasoning": prediction.reasoning,
+                "correct": prediction.predicted_class_idx == int(item["class_idx"]),
+            }
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            handle.flush()
+
+            true_labels.append(int(item["class_idx"]))
+            pred_labels.append(
+                -1
+                if prediction.predicted_class_idx is None
+                else int(prediction.predicted_class_idx)
+            )
+
+    accuracy = accuracy_score(true_labels, pred_labels) if true_labels else 0.0
 
     return {
         "fold": fold_index,
-        "num_test_items": len(predictions),
+        "num_test_items": len(true_labels),
         "accuracy": accuracy,
         "predictions_path": str(predictions_path),
     }
