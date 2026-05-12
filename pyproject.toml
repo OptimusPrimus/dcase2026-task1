@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dcase2026-task1"
+version = "0.1.0"
+description = "Dataset utilities for DCASE 2026 Task 1 experiments."
+requires-python = ">=3.10"
+dependencies = [
+  "accelerate>=1.0",
+  "librosa>=0.10",
+  "numpy>=1.24",
+  "scikit-learn>=1.4",
+  "torch>=2.0",
+  "torchaudio>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "transformers>=4.57.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
