@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dcase2026_task1.models.base import ModelInput, ModelSkill
-from dcase2026_task1.models.qwen_text import QwenTextClassificationSkill, QwenTextModel
+from dcase2026_task1.models.qwen import QwenClassificationSkill, QwenModel
 from dcase2026_task1.tasks import ClassificationResponse, ClassificationTask
 
 
@@ -25,7 +25,7 @@ def _candidate_classes() -> list[dict[str, object]]:
 
 
 def test_split_reasoning_with_explicit_think_tags() -> None:
-    reasoning, answer = QwenTextClassificationSkill._split_reasoning(
+    reasoning, answer = QwenClassificationSkill._split_reasoning(
         "<think>\nreasoning text\n</think>\n7"
     )
 
@@ -34,7 +34,7 @@ def test_split_reasoning_with_explicit_think_tags() -> None:
 
 
 def test_split_reasoning_with_opening_think_tag_in_prompt() -> None:
-    reasoning, answer = QwenTextClassificationSkill._split_reasoning(
+    reasoning, answer = QwenClassificationSkill._split_reasoning(
         "reasoning text\n</think>\n7"
     )
 
@@ -44,7 +44,7 @@ def test_split_reasoning_with_opening_think_tag_in_prompt() -> None:
 
 def test_classification_task_builds_prompt_from_generic_query() -> None:
     task = ClassificationTask(_candidate_classes())
-    skill = QwenTextClassificationSkill(task)
+    skill = QwenClassificationSkill(task)
 
     model_input = skill.build_input(
         {
@@ -62,7 +62,7 @@ def test_classification_task_builds_prompt_from_generic_query() -> None:
 
 def test_classification_task_parses_prediction() -> None:
     task = ClassificationTask(_candidate_classes())
-    skill = QwenTextClassificationSkill(task)
+    skill = QwenClassificationSkill(task)
 
     result = skill.parse_output("<think>\nchecking\n</think>\n2", {})
 
@@ -92,7 +92,7 @@ class DummySkill(ModelSkill):
 
 
 def test_predict_batch_uses_generic_task_and_batch_queries() -> None:
-    classifier = QwenTextModel.__new__(QwenTextModel)
+    classifier = QwenModel.__new__(QwenModel)
     classifier._generate_raw_response = lambda model_input: f"reply:{model_input.prompt}"
 
     results = classifier.predict_batch(
@@ -107,13 +107,13 @@ def test_predict_batch_uses_generic_task_and_batch_queries() -> None:
     ]
 
 def test_predict_batch_uses_classification_skill() -> None:
-    classifier = QwenTextModel.__new__(QwenTextModel)
+    classifier = QwenModel.__new__(QwenModel)
     classifier._generate_raw_response = lambda model_input: "<think>\n...\n</think>\n1"
     task = ClassificationTask(_candidate_classes())
 
     results = classifier.predict_batch(
         [{"title": "clip", "tags": "", "description": ""}],
-        QwenTextClassificationSkill(task),
+        QwenClassificationSkill(task),
     )
 
     assert len(results) == 1

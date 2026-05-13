@@ -6,8 +6,8 @@ from pathlib import Path
 
 from dcase2026_task1.data.datasets import DEFAULT_BSD10K_ROOT, BSDDataset
 from dcase2026_task1.models import (
-    Qwen3_6_35BA3BMetadataSummarizationSkill,
-    Qwen3_6_35BA3BModel,
+    QwenMetadataSummarizationSkill,
+    QwenModel,
 )
 from dcase2026_task1.tasks import MetadataSummarizationTask
 
@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model-id",
-        default="Qwen/Qwen3.6-35B-A3B",
+        default="Qwen/Qwen3.6-27B",
         help="Model identifier passed to the backend.",
     )
     parser.add_argument(
@@ -53,12 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def write_metadata_summaries(
     dataset: BSDDataset,
-    model: Qwen3_6_35BA3BModel,
+    model: QwenModel,
     output_path: Path,
     max_items: int | None = None,
 ) -> None:
     task = MetadataSummarizationTask()
-    skill = Qwen3_6_35BA3BMetadataSummarizationSkill(task)
+    skill = QwenMetadataSummarizationSkill(task)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     limit = len(dataset) if max_items is None else min(len(dataset), max_items)
     fieldnames = [
@@ -126,7 +126,7 @@ def main() -> None:
         dataset_name="BSD10k",
         load_audio=False,
     )
-    model = Qwen3_6_35BA3BModel(
+    model = QwenModel(
         model_id=args.model_id,
         device=args.device,
         torch_dtype=args.torch_dtype,

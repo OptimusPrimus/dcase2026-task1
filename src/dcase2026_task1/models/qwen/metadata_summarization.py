@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from dcase2026_task1.models.base import ModelInput, ModelSkill
+from dcase2026_task1.models.qwen.common import split_reasoning
 from dcase2026_task1.tasks import (
     MetadataSummarizationResponse,
     MetadataSummarizationTask,
@@ -10,7 +11,7 @@ from dcase2026_task1.tasks import (
 )
 
 
-class Qwen3_6_35BA3BMetadataSummarizationSkill(ModelSkill):
+class QwenMetadataSummarizationSkill(ModelSkill):
     _DETAIL_KEYS = [
         "recording_device",
         "sampling_rate",
@@ -71,12 +72,7 @@ class Qwen3_6_35BA3BMetadataSummarizationSkill(ModelSkill):
 
     @staticmethod
     def _split_reasoning(text: str) -> tuple[str | None, str]:
-        if "</think>" in text and "<think>" not in text:
-            text = f"<think>{text}"
-        think_match = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
-        reasoning = think_match.group(1).strip() if think_match else None
-        answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        return reasoning, answer
+        return split_reasoning(text)
 
     def _parse_summary(self, text: str) -> tuple[str, dict[str, str]]:
         audio_content = "unknown"

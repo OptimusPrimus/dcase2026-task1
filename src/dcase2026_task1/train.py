@@ -19,8 +19,8 @@ from dcase2026_task1.models import (
     AudioFlamingo3Model,
     AudioLanguageModel,
     ModelSkill,
-    QwenTextClassificationSkill,
-    QwenTextModel,
+    QwenClassificationSkill,
+    QwenModel,
 )
 from dcase2026_task1.tasks import ClassificationTask
 
@@ -36,8 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        choices=["audio-flamingo-3", "qwen-text"],
-        default="qwen-text", # "audio-flamingo-3",
+        choices=["audio-flamingo-3", "qwen", "qwen-text"],
+        default="qwen",
         help="Audio-language model backend.",
     )
     parser.add_argument(
@@ -102,9 +102,9 @@ def load_model(args: argparse.Namespace) -> AudioLanguageModel:
             device=args.device,
             torch_dtype=args.torch_dtype,
         )
-    if args.model == "qwen-text":
-        model_id = args.model_id or "Qwen/Qwen3.5-9B"
-        return QwenTextModel(
+    if args.model in {"qwen", "qwen-text"}:
+        model_id = args.model_id or "Qwen/Qwen3.6-27B"
+        return QwenModel(
             model_id=model_id,
             device=args.device,
             torch_dtype=args.torch_dtype,
@@ -118,8 +118,8 @@ def load_skill(
 ) -> ModelSkill:
     if args.model == "audio-flamingo-3":
         return AudioFlamingo3ClassificationSkill(task)
-    if args.model == "qwen-text":
-        return QwenTextClassificationSkill(task)
+    if args.model in {"qwen", "qwen-text"}:
+        return QwenClassificationSkill(task)
     raise ValueError(f"Unsupported model backend: {args.model}")
 
 
@@ -255,7 +255,7 @@ def main() -> None:
     summary = {
         "model": args.model,
         "model_id": args.model_id
-        or ("nvidia/audio-flamingo-3-hf" if args.model == "audio-flamingo-3" else "Qwen/Qwen3.5-9B"),
+        or ("nvidia/audio-flamingo-3-hf" if args.model == "audio-flamingo-3" else "Qwen/Qwen3.6-27B"),
         "num_folds": len(results),
         "mean_accuracy": mean(result["accuracy"] for result in results) if results else 0.0,
         "folds": results,

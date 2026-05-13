@@ -6,33 +6,31 @@ from typing import Any
 from dcase2026_task1.models.base import AudioLanguageModel, ModelInput, ModelSkill
 
 
-class Qwen3_6_35BA3BModel(AudioLanguageModel):
+class QwenModel(AudioLanguageModel):
     def __init__(
         self,
-        model_id: str = "Qwen/Qwen3.6-35B-A3B",
+        model_id: str = "Qwen/Qwen3.6-27B",
         device: str = "auto",
         torch_dtype: str = "auto",
         max_new_tokens: int = 1024,
     ) -> None:
         try:
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from transformers import AutoModelForImageTextToText, AutoProcessor
         except ImportError as exc:
             raise ImportError(
-                "Qwen3_6_35BA3BModel requires transformers>=4.57.0."
+                "QwenModel requires transformers>=4.57.0."
             ) from exc
 
         self.model_id = model_id
         self.max_new_tokens = max_new_tokens
         resolved_dtype = self._resolve_dtype(torch_dtype)
-        self._tokenizer = AutoTokenizer.from_pretrained(model_id)
-        self._model = AutoModelForCausalLM.from_pretrained(
+        self._processor = AutoProcessor.from_pretrained(model_id)
+        self._model = AutoModelForImageTextToText.from_pretrained(
             model_id,
             device_map=device,
             torch_dtype=resolved_dtype,
             low_cpu_mem_usage=True,
         )
-        if self._tokenizer.pad_token_id is None:
-            self._tokenizer.pad_token = self._tokenizer.eos_token
 
     @staticmethod
     def _resolve_dtype(torch_dtype: str) -> Any:
@@ -41,9 +39,7 @@ class Qwen3_6_35BA3BModel(AudioLanguageModel):
         try:
             import torch
         except ImportError as exc:
-            raise ImportError(
-                "Qwen3_6_35BA3BModel requires torch to resolve torch_dtype."
-            ) from exc
+            raise ImportError("QwenModel requires torch to resolve torch_dtype.") from exc
         dtype_map = {
             "float16": torch.float16,
             "bfloat16": torch.bfloat16,
@@ -69,8 +65,15 @@ class Qwen3_6_35BA3BModel(AudioLanguageModel):
         return skill.parse_outputs(raw_responses, items)
 
     def _generate_raw_response(self, model_input: ModelInput) -> str:
-        messages = [{"role": "user", "content": model_input.prompt}]
-        inputs = self._tokenizer.apply_chat_template(
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": model_input.prompt},
+                ],
+            }
+        ]
+        inputs = self._processor.apply_chat_template(
             messages,
             tokenize=True,
             add_generation_prompt=True,
@@ -87,7 +90,7 @@ class Qwen3_6_35BA3BModel(AudioLanguageModel):
             do_sample=True,
         )
         generated = outputs[:, inputs.input_ids.shape[1] :]
-        return self._tokenizer.batch_decode(
+        return self._processor.batch_decode(
             generated,
             skip_special_tokens=True,
         )[0].strip()

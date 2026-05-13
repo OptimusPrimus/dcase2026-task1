@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 
 from dcase2026_task1.models.base import ModelInput, ModelSkill
+from dcase2026_task1.models.qwen.common import split_reasoning
 from dcase2026_task1.tasks import ClassificationResponse, ClassificationTask, TaskItem
 
 
-class QwenTextClassificationSkill(ModelSkill):
+class QwenClassificationSkill(ModelSkill):
     def __init__(self, task: ClassificationTask) -> None:
         super().__init__(task)
         self.task = task
@@ -45,12 +46,7 @@ class QwenTextClassificationSkill(ModelSkill):
 
     @staticmethod
     def _split_reasoning(text: str) -> tuple[str | None, str]:
-        if "</think>" in text and "<think>" not in text:
-            text = f"<think>{text}"
-        think_match = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
-        reasoning = think_match.group(1).strip() if think_match else None
-        answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        return reasoning, answer
+        return split_reasoning(text)
 
     def _parse_prediction(self, raw_response: str) -> tuple[int | None, str | None]:
         option_match = re.search(r"\b(\d+)\b", raw_response)
