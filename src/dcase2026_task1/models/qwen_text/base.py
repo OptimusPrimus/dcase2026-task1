@@ -12,7 +12,7 @@ class QwenTextModel(AudioLanguageModel):
         model_id: str = "Qwen/Qwen3.5-9B",
         device: str = "auto",
         torch_dtype: str = "auto",
-        max_new_tokens: int = 32,
+        max_new_tokens: int = 1024,
     ) -> None:
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer

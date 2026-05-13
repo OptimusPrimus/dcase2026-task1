@@ -12,7 +12,7 @@ class AudioFlamingo3Model(AudioLanguageModel):
         model_id: str = "nvidia/audio-flamingo-3-hf",
         device: str = "auto",
         torch_dtype: str = "auto",
-        max_new_tokens: int = 64,
+        max_new_tokens: int = 1024,
     ) -> None:
         try:
             from transformers import AudioFlamingo3ForConditionalGeneration, AutoProcessor

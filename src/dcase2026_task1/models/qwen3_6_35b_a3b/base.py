@@ -12,7 +12,7 @@ class Qwen3_6_35BA3BModel(AudioLanguageModel):
         model_id: str = "Qwen/Qwen3.6-35B-A3B",
         device: str = "auto",
         torch_dtype: str = "auto",
-        max_new_tokens: int = 256,
+        max_new_tokens: int = 1024,
     ) -> None:
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer
