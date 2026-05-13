@@ -23,7 +23,6 @@ class QwenModel(AudioLanguageModel):
         self._llm = LLM(
             model=model_id,
             dtype=self._resolve_dtype(torch_dtype),
-            device=device,
         )
         self._sampling_params = SamplingParams(
             max_tokens=self.max_new_tokens,
