@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import torchaudio
 from torch.utils.data import ConcatDataset, Dataset
 
 DEFAULT_BSD35K_ROOT = Path.home() / "data" / "BSD35k-CS"
@@ -144,6 +143,12 @@ class BSDDataset(Dataset[dict[str, Any]]):
         audio_path = Path(item["audio_path"])
 
         if self.load_audio:
+            try:
+                import torchaudio
+            except ImportError as exc:
+                raise ImportError(
+                    "BSDDataset with load_audio=True requires torchaudio to be installed."
+                ) from exc
             waveform, sample_rate = torchaudio.load(audio_path)
             item["waveform"] = waveform
             item["sample_rate"] = sample_rate

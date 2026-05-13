@@ -5,7 +5,15 @@ Minimal project structure for working with the `BSD35k-CS` and `BSD10k` datasets
 ## Layout
 
 - `src/dcase2026_task1/data/datasets.py`: PyTorch datasets
+- `src/dcase2026_task1/tasks/`: model-agnostic task definitions
+- `src/dcase2026_task1/models/<model_name>/base.py`: model runtime implementation
+- `src/dcase2026_task1/models/<model_name>/<skill>.py`: task skill implementation for a model
 - `src/dcase2026_task1/cli.py`: argument parser and quick inspection entrypoint
+
+Current tasks:
+
+- `classification`
+- `audio_captioning`
 
 ## Quick start
 
@@ -15,6 +23,10 @@ python -m dcase2026_task1.cli --limit 3
 
 ```bash
 python -m dcase2026_task1.train --max-test-items 10
+```
+
+```bash
+python -m dcase2026_task1.caption_dataset --max-items 10
 ```
 
 Default dataset roots:
@@ -40,5 +52,3 @@ Install the optional runtime before using the model adapter:
 ```bash
 python -m pip install -e '.[dev]'
 ```
-
-

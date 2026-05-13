@@ -15,10 +15,14 @@ from dcase2026_task1.data.datasets import (
 )
 from dcase2026_task1.data.splits import build_stratified_folds
 from dcase2026_task1.models import (
-    AudioFlamingo3Classifier,
+    AudioFlamingo3ClassificationSkill,
+    AudioFlamingo3Model,
     AudioLanguageModel,
-    QwenTextClassifier,
+    ModelSkill,
+    QwenTextClassificationSkill,
+    QwenTextModel,
 )
+from dcase2026_task1.tasks import ClassificationTask
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,18 +97,29 @@ def build_parser() -> argparse.ArgumentParser:
 def load_model(args: argparse.Namespace) -> AudioLanguageModel:
     if args.model == "audio-flamingo-3":
         model_id = args.model_id or "nvidia/audio-flamingo-3-hf"
-        return AudioFlamingo3Classifier(
+        return AudioFlamingo3Model(
             model_id=model_id,
             device=args.device,
             torch_dtype=args.torch_dtype,
         )
     if args.model == "qwen-text":
         model_id = args.model_id or "Qwen/Qwen3.5-9B"
-        return QwenTextClassifier(
+        return QwenTextModel(
             model_id=model_id,
             device=args.device,
             torch_dtype=args.torch_dtype,
         )
+    raise ValueError(f"Unsupported model backend: {args.model}")
+
+
+def load_skill(
+    args: argparse.Namespace,
+    task: ClassificationTask,
+) -> ModelSkill:
+    if args.model == "audio-flamingo-3":
+        return AudioFlamingo3ClassificationSkill(task)
+    if args.model == "qwen-text":
+        return QwenTextClassificationSkill(task)
     raise ValueError(f"Unsupported model backend: {args.model}")
 
 
@@ -129,7 +144,7 @@ def build_candidate_classes(dataset: BSDDataset) -> list[dict[str, Any]]:
 def evaluate_fold(
     dataset: BSDDataset,
     model: AudioLanguageModel,
-    candidate_classes: list[dict[str, Any]],
+    skill: ModelSkill,
     fold_index: int,
     test_indices: list[int],
     output_dir: Path,
@@ -145,7 +160,7 @@ def evaluate_fold(
     with predictions_path.open("w", encoding="utf-8") as handle:
         for subset_index in range(limit):
             item = test_subset[subset_index]
-            prediction = model.predict(item, candidate_classes)
+            prediction = model.predict(item, skill)
             row = {
                 "fold": fold_index,
                 "subset_index": subset_index,
@@ -193,6 +208,7 @@ def main() -> None:
         load_audio=False,
     )
     candidate_classes = build_candidate_classes(dataset)
+    task = ClassificationTask(candidate_classes)
     labels = [int(record["class_idx"]) for record in dataset.records]
     folds = build_stratified_folds(
         labels=labels,
@@ -208,6 +224,7 @@ def main() -> None:
             raise ValueError(f"Fold {args.fold} is out of range for {len(folds)} folds.")
 
     model = load_model(args)
+    skill = load_skill(args, task)
     output_dir = Path(args.output_dir)
     results: list[dict[str, Any]] = []
 
@@ -222,7 +239,7 @@ def main() -> None:
         result = evaluate_fold(
             dataset=dataset,
             model=model,
-            candidate_classes=candidate_classes,
+            skill=skill,
             fold_index=fold.fold,
             test_indices=fold.test_indices,
             output_dir=output_dir,
