@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import csv
+import json
 from pathlib import Path
 
 from dcase2026_task1.data.datasets import DEFAULT_BSD10K_ROOT, BSDDataset
@@ -10,11 +10,12 @@ from dcase2026_task1.models import (
     QwenModel,
 )
 from dcase2026_task1.tasks import MetadataSummarizationTask
+from tqdm import tqdm
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create metadata summaries for every BSD10k example and store them in a CSV file."
+        description="Create metadata summaries for every BSD10k example and store them in a JSONL file."
     )
     parser.add_argument(
         "--bsd10k-root",
@@ -29,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--device",
         default="auto",
-        help="Transformers device_map value for the model backend.",
+        help="Reserved backend device setting.",
     )
     parser.add_argument(
         "--torch-dtype",
@@ -51,8 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output",
-        default="outputs/metadata_summaries.csv",
-        help="Path of the CSV file to write.",
+        default="outputs/metadata_summaries.jsonl",
+        help="Path of the JSONL file to write.",
     )
     return parser
 
@@ -67,62 +68,29 @@ def write_metadata_summaries(
     skill = QwenMetadataSummarizationSkill(task)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     limit = len(dataset) if max_items is None else min(len(dataset), max_items)
-    fieldnames = [
-        "dataset_index",
-        "sound_id",
-        "source_dataset",
-        "audio_path",
-        "title",
-        "tags",
-        "description",
-        "target_class_idx",
-        "target_class",
-        "audio_content",
-        "recording_device",
-        "sampling_rate",
-        "bitrate",
-        "recording_location",
-        "dataset_or_project",
-        "additional_context",
-        "raw_response",
-        "final_response",
-        "reasoning",
-    ]
 
-    with output_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-
-        for index in range(limit):
+    with output_path.open("w", encoding="utf-8") as handle:
+        for index in tqdm(range(limit), total=limit, desc="Summarizing", unit="item"):
             item = dataset[index]
             response = model.predict(item, skill)
-            writer.writerow(
-                {
-                    "dataset_index": index,
-                    "sound_id": item["sound_id"],
-                    "source_dataset": item["source_dataset"],
-                    "audio_path": item["audio_path"],
-                    "title": item["title"],
-                    "tags": item["tags"],
-                    "description": item["description"],
-                    "target_class_idx": int(item["class_idx"]),
-                    "target_class": item["class"],
-                    "audio_content": response.audio_content,
-                    "recording_device": response.metadata_details["recording_device"],
-                    "sampling_rate": response.metadata_details["sampling_rate"],
-                    "bitrate": response.metadata_details["bitrate"],
-                    "recording_location": response.metadata_details["recording_location"],
-                    "dataset_or_project": response.metadata_details["dataset_or_project"],
-                    "additional_context": response.metadata_details["additional_context"],
-                    "raw_response": response.raw_response,
-                    "final_response": response.final_response,
-                    "reasoning": response.reasoning,
-                }
-            )
+            row = {
+                "dataset_index": index,
+                "sound_id": item["sound_id"],
+                "source_dataset": item["source_dataset"],
+                "audio_path": item["audio_path"],
+                "title": item["title"],
+                "tags": item["tags"],
+                "description": item["description"],
+                "target_class_idx": int(item["class_idx"]),
+                "target_class": item["class"],
+                "audio_content": response.audio_content,
+                "metadata_details": response.metadata_details,
+                "raw_response": response.raw_response,
+                "final_response": response.final_response,
+                "reasoning": response.reasoning,
+            }
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             handle.flush()
-
-            if (index + 1) % 10 == 0 or index + 1 == limit:
-                print(f"Summarized {index + 1}/{limit} items.")
 
 
 def main() -> None:

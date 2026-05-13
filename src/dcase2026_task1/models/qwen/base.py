@@ -30,9 +30,9 @@ class QwenModel(AudioLanguageModel):
         )
         self._sampling_params = SamplingParams(
             max_tokens=self.max_new_tokens,
-            temperature=1.0,
-            top_p=0.95,
-            top_k=20,
+            temperature=0.2,
+            top_p=0.85,
+            repetition_penalty=1.1,
         )
 
     @staticmethod
