@@ -38,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Torch dtype for model loading.",
     )
     parser.add_argument(
+        "--tensor-parallel-size",
+        type=int,
+        default=1,
+        help="vLLM tensor parallelism degree for Qwen inference.",
+    )
+    parser.add_argument(
         "--max-items",
         type=int,
         default=None,
@@ -130,6 +136,7 @@ def main() -> None:
         model_id=args.model_id,
         device=args.device,
         torch_dtype=args.torch_dtype,
+        tensor_parallel_size=args.tensor_parallel_size,
     )
     output_path = Path(args.output)
 

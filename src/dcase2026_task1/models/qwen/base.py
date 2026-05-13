@@ -12,6 +12,7 @@ class QwenModel(AudioLanguageModel):
         device: str = "auto",
         torch_dtype: str = "auto",
         max_new_tokens: int = 1024,
+        tensor_parallel_size: int = 1,
     ) -> None:
         try:
             from vllm import LLM, SamplingParams
@@ -20,9 +21,12 @@ class QwenModel(AudioLanguageModel):
 
         self.model_id = model_id
         self.max_new_tokens = max_new_tokens
+        if tensor_parallel_size < 1:
+            raise ValueError("tensor_parallel_size must be >= 1.")
         self._llm = LLM(
             model=model_id,
             dtype=self._resolve_dtype(torch_dtype),
+            tensor_parallel_size=tensor_parallel_size,
         )
         self._sampling_params = SamplingParams(
             max_tokens=self.max_new_tokens,

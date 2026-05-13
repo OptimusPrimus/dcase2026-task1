@@ -57,6 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Torch dtype for model loading.",
     )
     parser.add_argument(
+        "--tensor-parallel-size",
+        type=int,
+        default=1,
+        help="vLLM tensor parallelism degree for Qwen inference.",
+    )
+    parser.add_argument(
         "--fold",
         type=int,
         default=None,
@@ -108,6 +114,7 @@ def load_model(args: argparse.Namespace) -> AudioLanguageModel:
             model_id=model_id,
             device=args.device,
             torch_dtype=args.torch_dtype,
+            tensor_parallel_size=args.tensor_parallel_size,
         )
     raise ValueError(f"Unsupported model backend: {args.model}")
 
