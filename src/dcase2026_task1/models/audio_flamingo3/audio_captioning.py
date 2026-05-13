@@ -18,36 +18,24 @@ class AudioFlamingo3AudioCaptioningSkill(ModelSkill):
     def build_input(self, item: TaskItem) -> ModelInput:
         normalized = self.task.normalize_item(item)
         prompt = (
-            "Analyze the provided audio recording together with the metadata.\n\n"
-            "First, describe the actual audio content in a concise but specific way, "
-            "including audible events, environment, speech, music, ambience, or notable sounds.\n\n"
-            "Second, provide technical and contextual metadata inferred from the audio "
-            "and supplied metadata where possible, including:\n"
-            "- recording device or microphone type\n"
-            "- bitrate\n"
-            "- sampling rate\n"
-            "- recording location\n"
-            "- sound project or collection name\n"
-            "- audio quality characteristics\n\n"
-            "Use the following explicit output format exactly:\n\n"
-            "DESCRIPTION: <content description>\n"
-            "TECHNICAL_DETAILS:\n"
-            "- device: <device or unknown>\n"
-            "- bitrate: <value or unknown>\n"
-            "- sample_rate: <value or unknown>\n"
-            "- location: <location or unknown>\n"
-            "- sound_project: <project name or unknown>\n"
-            "- audio_quality: <quality notes>\n\n"
-            "Rules:\n"
-            "- Base the response on both the audio and metadata.\n"
-            "- Do not invent details that cannot reasonably be inferred.\n"
-            "- Use 'unknown' when information is unavailable.\n"
-            "- Keep the DESCRIPTION concise and factual.\n"
-            "- Return only the formatted result.\n\n"
             "Clip metadata:\n"
             f'- title=\"{normalized["title"]}\"\n'
             f'- tags=\"{normalized["tags"]}\"\n'
-            f'- description=\"{normalized["description"]}\"\n'
+            f'- description=\"{normalized["description"]}\"\n\n'
+            "Task:\n"
+            "Analyze the provided audio recording together with the metadata.\n\n"
+            "Describe only the audible content of the recording in a concise and factual way.\n"
+            "Focus on audible events, environment, speech, music, ambience, textures, "
+            "or notable sounds.\n\n"
+            "Do NOT include technical details such as bitrate, sampling rate, "
+            "recording device, location, or file metadata.\n\n"
+            "Use the following output format exactly:\n\n"
+            "DESCRIPTION: <audio content description>\n\n"
+            "Rules:\n"
+            "- Base the response on both the audio and metadata.\n"
+            "- Do not invent details that cannot reasonably be inferred.\n"
+            "- Keep the description concise, specific, and factual.\n"
+            "- Return only the formatted result.\n"
         )
         audio_path = normalized.get("audio_path")
         if not isinstance(audio_path, str) or not audio_path:
