@@ -14,7 +14,7 @@ dependencies = [
   "scikit-learn>=1.4",
   "torch>=2.0",
   "torchaudio>=2.0",
-  "torchvision>=0.15",
+  "vllm>=0.19.0",
 ]
 
 [project.optional-dependencies]
