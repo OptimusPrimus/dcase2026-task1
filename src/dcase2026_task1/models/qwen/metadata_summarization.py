@@ -32,6 +32,7 @@ class QwenMetadataSummarizationSkill(ModelSkill):
             "Section 1 should describe only the audible content of the recording.\n\n"
             "Section 2 should contain contextual or technical metadata, such as recording device, "
             "recording location, bitrate, sampling rate, dataset name, project name, or other non-audio details.\n\n"
+            "If you use reasoning, keep it very short and focused on the key evidence only.\n\n"
             "Do not invent information that is not explicitly provided or cannot reasonably be inferred. "
             'Use "unknown" when necessary.\n\n'
             "Use the following output format exactly:\n\n"
