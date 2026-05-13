@@ -12,11 +12,17 @@ from dcase2026_task1.models.qwen_text import (
     QwenTextClassificationSkill,
     QwenTextModel,
 )
+from dcase2026_task1.models.qwen3_6_35b_a3b import (
+    Qwen3_6_35BA3BMetadataSummarizationSkill,
+    Qwen3_6_35BA3BModel,
+)
 from dcase2026_task1.tasks import (
     AudioCaptioningResponse,
     AudioCaptioningTask,
     ClassificationResponse,
     ClassificationTask,
+    MetadataSummarizationResponse,
+    MetadataSummarizationTask,
 )
 
 AudioFlamingo3ClassificationTask = AudioFlamingo3ClassificationSkill
@@ -37,6 +43,10 @@ __all__ = [
     "ClassificationTask",
     "ModelInput",
     "ModelSkill",
+    "MetadataSummarizationResponse",
+    "MetadataSummarizationTask",
+    "Qwen3_6_35BA3BMetadataSummarizationSkill",
+    "Qwen3_6_35BA3BModel",
     "QwenTextClassificationSkill",
     "QwenTextClassificationTask",
     "QwenTextClassifier",

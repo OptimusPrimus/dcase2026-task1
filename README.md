@@ -14,6 +14,7 @@ Current tasks:
 
 - `classification`
 - `audio_captioning`
+- `metadata_summarization`
 
 ## Quick start
 
@@ -27,6 +28,10 @@ python -m dcase2026_task1.train --max-test-items 10
 
 ```bash
 python -m dcase2026_task1.caption_dataset --max-items 10
+```
+
+```bash
+python -m dcase2026_task1.metadata_summary_dataset --max-items 10
 ```
 
 Default dataset roots:
