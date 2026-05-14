@@ -13,6 +13,8 @@ class QwenModel(AudioLanguageModel):
         torch_dtype: str = "auto",
         max_new_tokens: int = 1024,
         tensor_parallel_size: int = 1,
+        disable_custom_all_reduce: bool = False,
+        enforce_eager: bool = False,
     ) -> None:
         try:
             from vllm import LLM, SamplingParams
@@ -27,6 +29,8 @@ class QwenModel(AudioLanguageModel):
             model=model_id,
             dtype=self._resolve_dtype(torch_dtype),
             tensor_parallel_size=tensor_parallel_size,
+            disable_custom_all_reduce=disable_custom_all_reduce,
+            enforce_eager=enforce_eager,
         )
         self._sampling_params = SamplingParams(
             max_tokens=self.max_new_tokens,

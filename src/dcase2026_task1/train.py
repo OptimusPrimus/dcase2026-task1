@@ -63,6 +63,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="vLLM tensor parallelism degree for Qwen inference.",
     )
     parser.add_argument(
+        "--disable-custom-all-reduce",
+        action="store_true",
+        help="Pass disable_custom_all_reduce=True to the vLLM Qwen backend.",
+    )
+    parser.add_argument(
+        "--enforce-eager",
+        action="store_true",
+        help="Pass enforce_eager=True to the vLLM Qwen backend.",
+    )
+    parser.add_argument(
         "--fold",
         type=int,
         default=None,
@@ -115,6 +125,8 @@ def load_model(args: argparse.Namespace) -> AudioLanguageModel:
             device=args.device,
             torch_dtype=args.torch_dtype,
             tensor_parallel_size=args.tensor_parallel_size,
+            disable_custom_all_reduce=args.disable_custom_all_reduce,
+            enforce_eager=args.enforce_eager,
         )
     raise ValueError(f"Unsupported model backend: {args.model}")
 
