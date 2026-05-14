@@ -28,23 +28,13 @@ class QwenMetadataSummarizationSkill(ModelSkill):
     def build_input(self, item: TaskItem) -> ModelInput:
         normalized = self.task.normalize_item(item)
         prompt = (
-            "Given the following audio clip metadata, separate the information into two sections.\n\n"
-            "Section 1 should describe only the audible content of the recording.\n\n"
-            "Section 2 should contain contextual or technical metadata, such as recording device, "
-            "recording location, bitrate, sampling rate, dataset name, project name, or other non-audio details.\n\n"
-            "If you use reasoning, keep it very short and focused on the key evidence only.\n\n"
-            "Do not invent information that is not explicitly provided or cannot reasonably be inferred. "
-            'Use "unknown" when necessary.\n\n'
-            "Use the following output format exactly:\n\n"
-            "AUDIO_CONTENT:\n"
-            "<description of audible content or unknown>\n\n"
-            "METADATA_DETAILS:\n"
-            "- recording_device: <value or unknown>\n"
-            "- sampling_rate: <value or unknown>\n"
-            "- bitrate: <value or unknown>\n"
-            "- recording_location: <value or unknown>\n"
-            "- dataset_or_project: <value or unknown>\n"
-            "- additional_context: <value or unknown>\n\n"
+            "Given the following audio clip metadata, write a short summary of the audible content.\n\n"
+            "Describe only what is likely heard in the audio.\n\n"
+            "Do not mention technical or contextual metadata such as recording device, location, bitrate, "
+            "sample rate, file format, duration, timestamps, dataset name, project name, uploader, tags, "
+            "IDs, filenames, channels, or other non-audible details.\n\n"
+            'Use "unknown" if necessary.\n\n'
+            "Return only the summary text.\n\n"
             "[AUDIO CLIP METADATA]\n\n"
             "Title:\n"
             f'{normalized["title"]}\n\n'
@@ -76,28 +66,6 @@ class QwenMetadataSummarizationSkill(ModelSkill):
         return split_reasoning(text)
 
     def _parse_summary(self, text: str) -> tuple[str, dict[str, str]]:
-        audio_content = "unknown"
-        section_match = re.search(
-            r"AUDIO_CONTENT:\s*(.*?)\s*METADATA_DETAILS:",
-            text,
-            flags=re.DOTALL,
-        )
-        if section_match:
-            extracted = section_match.group(1).strip()
-            if extracted:
-                audio_content = extracted
-        elif text.strip():
-            audio_content = text.strip()
-
+        audio_content = text.strip() or "unknown"
         metadata_details = {key: "unknown" for key in self._DETAIL_KEYS}
-        for key in self._DETAIL_KEYS:
-            line_match = re.search(
-                rf"-\s*{re.escape(key)}:\s*(.*)",
-                text,
-                flags=re.IGNORECASE,
-            )
-            if line_match:
-                value = line_match.group(1).strip()
-                metadata_details[key] = value or "unknown"
-
         return audio_content, metadata_details
