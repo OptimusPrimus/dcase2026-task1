@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Mapping
+from urllib import error, request
 
 from dcase2026_task1.models.base import AudioLanguageModel, ModelInput, ModelSkill
 
@@ -12,32 +15,23 @@ class QwenModel(AudioLanguageModel):
         device: str = "auto",
         torch_dtype: str = "auto",
         max_new_tokens: int = 1024,
+        api_base: str | None = None,
+        api_key: str | None = None,
         tensor_parallel_size: int = 1,
         disable_custom_all_reduce: bool = False,
         enforce_eager: bool = False,
     ) -> None:
-        try:
-            from vllm import LLM, SamplingParams
-        except ImportError as exc:
-            raise ImportError("QwenModel requires vllm>=0.19.0.") from exc
-
         self.model_id = model_id
         self.max_new_tokens = max_new_tokens
-        if tensor_parallel_size < 1:
-            raise ValueError("tensor_parallel_size must be >= 1.")
-        self._llm = LLM(
-            model=model_id,
-            dtype=self._resolve_dtype(torch_dtype),
-            tensor_parallel_size=tensor_parallel_size,
-            disable_custom_all_reduce=disable_custom_all_reduce,
-            enforce_eager=enforce_eager,
-        )
-        self._sampling_params = SamplingParams(
-            max_tokens=self.max_new_tokens,
-            temperature=0.2,
-            top_p=0.85,
-            repetition_penalty=1.1,
-        )
+        self.api_base = (api_base or os.environ.get("VLLM_API_BASE") or "http://127.0.0.1:8000/v1").rstrip("/")
+        self.api_key = api_key or os.environ.get("VLLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        self._resolve_dtype(torch_dtype)
+        self._ignored_runtime_options = {
+            "device": device,
+            "tensor_parallel_size": tensor_parallel_size,
+            "disable_custom_all_reduce": disable_custom_all_reduce,
+            "enforce_eager": enforce_eager,
+        }
 
     @staticmethod
     def _resolve_dtype(torch_dtype: str) -> str:
@@ -63,17 +57,46 @@ class QwenModel(AudioLanguageModel):
         return [{"role": "user", "content": model_input.prompt}]
 
     def _generate_raw_responses(self, model_inputs: list[ModelInput]) -> list[str]:
-        if not hasattr(self, "_llm"):
-            return [self._generate_raw_response(model_input) for model_input in model_inputs]
-
-        conversations = [self._build_messages(model_input) for model_input in model_inputs]
-        outputs = self._llm.chat(
-            messages=conversations,
-            sampling_params=self._sampling_params,
-            use_tqdm=False,
-            chat_template_kwargs={"enable_thinking": True},
-        )
-        return [output.outputs[0].text.strip() for output in outputs]
+        return [self._generate_raw_response(model_input) for model_input in model_inputs]
 
     def _generate_raw_response(self, model_input: ModelInput) -> str:
-        return self._generate_raw_responses([model_input])[0]
+        payload = {
+            "model": self.model_id,
+            "messages": self._build_messages(model_input),
+            "max_tokens": self.max_new_tokens,
+            "temperature": 0.2,
+            "top_p": 0.85,
+            "repetition_penalty": 1.1,
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
+        body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        http_request = request.Request(
+            url=f"{self.api_base}/chat/completions",
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with request.urlopen(http_request) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"QwenModel API request failed with HTTP {exc.code}: {details}"
+            ) from exc
+        except error.URLError as exc:
+            raise RuntimeError(
+                f"QwenModel could not reach vLLM API at {self.api_base}: {exc.reason}"
+            ) from exc
+
+        try:
+            return payload["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, AttributeError, TypeError) as exc:
+            raise RuntimeError(
+                f"QwenModel received an unexpected API response: {payload!r}"
+            ) from exc

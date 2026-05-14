@@ -54,23 +54,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--torch-dtype",
         default="auto",
         choices=["auto", "float16", "bfloat16", "float32"],
-        help="Torch dtype for model loading.",
+        help="Reserved backend dtype setting.",
+    )
+    parser.add_argument(
+        "--api-base",
+        default=None,
+        help="Base URL of the running vLLM OpenAI-compatible API, e.g. http://127.0.0.1:8000/v1.",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="Optional API key for the running vLLM OpenAI-compatible API.",
     )
     parser.add_argument(
         "--tensor-parallel-size",
         type=int,
         default=1,
-        help="vLLM tensor parallelism degree for Qwen inference.",
+        help="Ignored when using a running vLLM API instance.",
     )
     parser.add_argument(
         "--disable-custom-all-reduce",
         action="store_true",
-        help="Pass disable_custom_all_reduce=True to the vLLM Qwen backend.",
+        help="Ignored when using a running vLLM API instance.",
     )
     parser.add_argument(
         "--enforce-eager",
         action="store_true",
-        help="Pass enforce_eager=True to the vLLM Qwen backend.",
+        help="Ignored when using a running vLLM API instance.",
     )
     parser.add_argument(
         "--fold",
@@ -124,6 +134,8 @@ def load_model(args: argparse.Namespace) -> AudioLanguageModel:
             model_id=model_id,
             device=args.device,
             torch_dtype=args.torch_dtype,
+            api_base=args.api_base,
+            api_key=args.api_key,
             tensor_parallel_size=args.tensor_parallel_size,
             disable_custom_all_reduce=args.disable_custom_all_reduce,
             enforce_eager=args.enforce_eager,
