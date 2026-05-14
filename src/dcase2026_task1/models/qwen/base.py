@@ -67,7 +67,7 @@ class QwenModel(AudioLanguageModel):
             "temperature": 0.2,
             "top_p": 0.85,
             "repetition_penalty": 1.1,
-            "chat_template_kwargs": {"enable_thinking": True},
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         body = json.dumps(payload).encode("utf-8")
         headers = {
