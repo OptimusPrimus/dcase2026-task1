@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
 from urllib import error, request
 
-from dcase2026_task1.models.base import AudioLanguageModel, ModelInput, ModelSkill
+from dcase2026_task1.models.base import GenerativeModel, ModelInput
 
 
-class QwenModel(AudioLanguageModel):
+class QwenModel(GenerativeModel):
     def __init__(
         self,
         model_id: str = "Qwen/Qwen3.6-27B",
@@ -23,7 +22,9 @@ class QwenModel(AudioLanguageModel):
     ) -> None:
         self.model_id = model_id
         self.max_new_tokens = max_new_tokens
-        self.api_base = (api_base or os.environ.get("VLLM_API_BASE") or "http://127.0.0.1:8000/v1").rstrip("/")
+        self.api_base = (
+            api_base or os.environ.get("VLLM_API_BASE") or "http://127.0.0.1:8000/v1"
+        ).rstrip("/")
         self.api_key = api_key or os.environ.get("VLLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
         self._resolve_dtype(torch_dtype)
         self._ignored_runtime_options = {
@@ -43,21 +44,12 @@ class QwenModel(AudioLanguageModel):
             )
         return torch_dtype
 
-    def predict_batch(
-        self,
-        items: list[Mapping[str, object]],
-        skill: ModelSkill,
-    ) -> list[object]:
-        model_inputs = skill.build_inputs(items)
-        raw_responses = self._generate_raw_responses(model_inputs)
-        return skill.parse_outputs(raw_responses, items)
+    def generate_batch(self, model_inputs: list[ModelInput]) -> list[str]:
+        return [self._generate_raw_response(model_input) for model_input in model_inputs]
 
     @staticmethod
     def _build_messages(model_input: ModelInput) -> list[dict[str, str]]:
         return [{"role": "user", "content": model_input.prompt}]
-
-    def _generate_raw_responses(self, model_inputs: list[ModelInput]) -> list[str]:
-        return [self._generate_raw_response(model_input) for model_input in model_inputs]
 
     def _generate_raw_response(self, model_input: ModelInput) -> str:
         payload = {
@@ -70,9 +62,7 @@ class QwenModel(AudioLanguageModel):
             "chat_template_kwargs": {"enable_thinking": False},
         }
         body = json.dumps(payload).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         http_request = request.Request(

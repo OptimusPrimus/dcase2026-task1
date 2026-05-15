@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
-from dcase2026_task1.models.base import AudioLanguageModel, ModelInput, ModelSkill
+from dcase2026_task1.models.base import GenerativeModel, ModelInput
 
 
-class AudioFlamingo3Model(AudioLanguageModel):
+class AudioFlamingo3Model(GenerativeModel):
     def __init__(
         self,
         model_id: str = "nvidia/audio-flamingo-3-hf",
@@ -54,17 +53,8 @@ class AudioFlamingo3Model(AudioLanguageModel):
             )
         return dtype_map[torch_dtype]
 
-    def predict_batch(
-        self,
-        items: list[Mapping[str, object]],
-        skill: ModelSkill,
-    ) -> list[object]:
-        model_inputs = skill.build_inputs(items)
-        raw_responses = [
-            self._generate_raw_response(model_input)
-            for model_input in model_inputs
-        ]
-        return skill.parse_outputs(raw_responses, items)
+    def generate_batch(self, model_inputs: list[ModelInput]) -> list[str]:
+        return [self._generate_raw_response(model_input) for model_input in model_inputs]
 
     def _generate_raw_response(self, model_input: ModelInput) -> str:
         conversation = [
