@@ -5,10 +5,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from torch.utils.data import ConcatDataset, Dataset
 
 DEFAULT_BSD35K_ROOT = Path.home() / "data" / "BSD35k-CS"
 DEFAULT_BSD10K_ROOT = Path.home() / "data" / "BSD10k"
+
+
+def load_audio_waveform(audio_path: str | Path) -> tuple[np.ndarray, int]:
+    try:
+        import soundfile as sf
+    except ImportError as exc:
+        raise ImportError(
+            "Loading audio requires soundfile to be installed."
+        ) from exc
+
+    waveform, sample_rate = sf.read(str(audio_path), always_2d=False, dtype="float32")
+    waveform = np.asarray(waveform, dtype=np.float32)
+    if waveform.ndim == 1:
+        waveform = waveform[np.newaxis, :]
+    elif waveform.ndim == 2:
+        waveform = waveform.T
+    else:
+        raise RuntimeError(
+            f"Expected mono or stereo audio at {audio_path}, got shape {waveform.shape!r}."
+        )
+    return waveform, int(sample_rate)
 
 
 @dataclass(frozen=True)
@@ -143,13 +165,7 @@ class BSDDataset(Dataset[dict[str, Any]]):
         audio_path = Path(item["audio_path"])
 
         if self.load_audio:
-            try:
-                import torchaudio
-            except ImportError as exc:
-                raise ImportError(
-                    "BSDDataset with load_audio=True requires torchaudio to be installed."
-                ) from exc
-            waveform, sample_rate = torchaudio.load(audio_path)
+            waveform, sample_rate = load_audio_waveform(audio_path)
             item["waveform"] = waveform
             item["sample_rate"] = sample_rate
 
