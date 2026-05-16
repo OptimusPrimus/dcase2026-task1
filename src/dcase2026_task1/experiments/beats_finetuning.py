@@ -11,6 +11,11 @@ from uuid import uuid4
 
 import numpy as np
 from tqdm import tqdm
+
+from dcase2026_task1.data.splits import (
+    DEFAULT_BSD_SPLIT_SEED,
+    get_experiment_records,
+)
 from dcase2026_task1.models.beats import BEATs, BEATsConfig
 
 import warnings
@@ -35,12 +40,6 @@ DEFAULT_OUTPUT_ROOT = (
 )
 
 DEFAULT_CHECKPOINT_ALIAS = "beats_iter3plus_as2m"
-@dataclass(frozen=True)
-class DatasetSelection:
-    cli_name: str
-    canonical_name: str
-    display_name: str
-    dataset_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -48,16 +47,6 @@ class LabelSpec:
     label_id: int
     dataset_class_idx: int
     class_name: str
-
-
-@dataclass(frozen=True)
-class ExperimentSplit:
-    train_records: list[dict[str, Any]]
-    val_records: list[dict[str, Any]]
-    test_records: list[dict[str, Any]]
-    clean_train_size: int
-    noisy_train_size: int
-    split_seed: int
 
 
 class WaveformClassificationDataset:
@@ -98,14 +87,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Fine-tune the original Microsoft BEATs model on BSD datasets with PyTorch Lightning."
     )
-    parser.add_argument(
-        "--dataset",
-        choices=["BSD10k", "BSD35k-CS", "combined"],
-        default="BSD10k",
-        help="Dataset choice.",
-    )
     parser.add_argument("--bsd10k-root", default=None)
-    parser.add_argument("--bsd25k-root", default=None)
+    parser.add_argument("--bsd35k-root", default=None)
+    parser.add_argument(
+        "--include-bsd35k-cs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Add BSD35k-CS to the training split only.",
+    )
     parser.add_argument(
         "--checkpoint-dir",
         default=str(DEFAULT_CHECKPOINT_DIR),
@@ -131,7 +120,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--validation-size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--split-seed", type=int, default=566182)
     parser.add_argument("--max-train-items", type=int, default=None)
     parser.add_argument("--max-val-items", type=int, default=None)
     parser.add_argument("--max-test-items", type=int, default=None)
@@ -159,76 +147,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def resolve_dataset_selection(dataset_name: str) -> DatasetSelection:
-    normalized = dataset_name.strip().lower()
-    if normalized in {"bsd10k"}:
-        return DatasetSelection(
-            cli_name=dataset_name,
-            canonical_name="BSD10k",
-            display_name="BSD10k",
-            dataset_names=("BSD10k",),
-        )
-    if normalized in {"bsd35k-cs"}:
-        return DatasetSelection(
-            cli_name=dataset_name,
-            canonical_name="BSD35k-CS",
-            display_name="BSD35k-CS",
-            dataset_names=("BSD35k-CS",),
-        )
-    if normalized == "combined":
-        return DatasetSelection(
-            cli_name=dataset_name,
-            canonical_name="combined",
-            display_name="BSD10k+BSD35k-CS",
-            dataset_names=("BSD10k", "BSD35k-CS"),
-        )
-    raise ValueError(f"Unsupported dataset selection: {dataset_name!r}")
-
-
 def resolve_dataset_roots(
-    selection: DatasetSelection,
     bsd10k_root: str | None,
-    bsd25k_root: str | None,
+    bsd35k_root: str | None,
 ) -> dict[str, Path]:
-    roots = {
+    return {
         "BSD10k": Path(bsd10k_root) if bsd10k_root is not None else DEFAULT_BSD10K_ROOT,
-        "BSD35k-CS": Path(bsd25k_root) if bsd25k_root is not None else DEFAULT_BSD35K_ROOT,
+        "BSD35k-CS": Path(bsd35k_root) if bsd35k_root is not None else DEFAULT_BSD35K_ROOT,
     }
-    return {name: roots[name] for name in selection.dataset_names}
-
-
-def load_dataset_records(
-    selection: DatasetSelection,
-    dataset_roots: dict[str, Path],
-) -> list[dict[str, Any]]:
-    from dcase2026_task1.data.datasets import BSDCombinedDataset, BSDDataset
-
-    if selection.canonical_name == "combined":
-        dataset = BSDCombinedDataset(
-            bsd35k_root=dataset_roots["BSD35k-CS"],
-            bsd10k_root=dataset_roots["BSD10k"],
-            load_audio=False,
-        )
-        return list(dataset.records)
-
-    root = dataset_roots[selection.canonical_name]
-    dataset = BSDDataset(
-        root=root,
-        dataset_name=selection.canonical_name,
-        load_audio=False,
-    )
-    return list(dataset.records)
-
-
-def load_records_by_dataset_name(dataset_name: str, root: Path) -> list[dict[str, Any]]:
-    from dcase2026_task1.data.datasets import BSDDataset
-
-    dataset = BSDDataset(
-        root=root,
-        dataset_name=dataset_name,
-        load_audio=False,
-    )
-    return list(dataset.records)
 
 
 def build_label_specs(records: list[dict[str, Any]]) -> list[LabelSpec]:
@@ -257,70 +183,14 @@ def build_id2label(label_specs: list[LabelSpec]) -> dict[int, str]:
     return {spec.label_id: spec.class_name for spec in label_specs}
 
 
-def create_experiment_dir(output_root: Path, selection: DatasetSelection) -> Path:
+def create_experiment_dir(output_root: Path, include_bsd35k_cs: bool) -> Path:
+    dataset_name = "BSD10k_plus_BSD35k-CS" if include_bsd35k_cs else "BSD10k"
     experiment_id = (
-        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{selection.canonical_name}_beats_{uuid4().hex[:8]}"
+        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{dataset_name}_beats_{uuid4().hex[:8]}"
     )
     experiment_dir = output_root / experiment_id
     experiment_dir.mkdir(parents=True, exist_ok=False)
     return experiment_dir
-
-
-def select_fold_split(
-    records: list[dict[str, Any]],
-    fold: int,
-    n_splits: int,
-    validation_size: float,
-    seed: int,
-) -> Any:
-    from dcase2026_task1.data.splits import build_stratified_folds
-
-    splits = build_stratified_folds(
-        labels=[int(record["class_idx"]) for record in records],
-        n_splits=n_splits,
-        validation_size=validation_size,
-        seed=seed,
-    )
-    if not 0 <= fold < len(splits):
-        raise ValueError(f"fold must be in [0, {len(splits) - 1}], got {fold}.")
-    return splits[fold]
-
-
-def build_experiment_split(
-    selection: DatasetSelection,
-    dataset_roots: dict[str, Path],
-    fold: int,
-    n_splits: int,
-    validation_size: float,
-    split_seed: int,
-) -> ExperimentSplit:
-    clean_records = load_records_by_dataset_name("BSD10k", dataset_roots["BSD10k"])
-    noisy_records = (
-        load_records_by_dataset_name("BSD35k-CS", dataset_roots["BSD35k-CS"])
-        if "BSD35k-CS" in selection.dataset_names
-        else []
-    )
-
-    fold_split = select_fold_split(
-        records=clean_records,
-        fold=fold,
-        n_splits=n_splits,
-        validation_size=validation_size,
-        seed=split_seed,
-    )
-
-    train_records = [clean_records[index] for index in fold_split.train_indices]
-    train_records.extend(noisy_records)
-    val_records = [clean_records[index] for index in fold_split.val_indices]
-    test_records = [clean_records[index] for index in fold_split.test_indices]
-    return ExperimentSplit(
-        train_records=train_records,
-        val_records=val_records,
-        test_records=test_records,
-        clean_train_size=len(fold_split.train_indices),
-        noisy_train_size=len(noisy_records),
-        split_seed=split_seed,
-    )
 
 
 def maybe_limit(indices: list[int], limit: int | None) -> list[int]:
@@ -599,32 +469,21 @@ def run_experiment(args: argparse.Namespace) -> Path:
     pl, ModelCheckpoint, LearningRateMonitor, WandbLogger = _get_lightning_runtime()
     progress_bar = _get_progress_bar_callback(pl)
 
-    selection = resolve_dataset_selection(args.dataset)
-    if selection.canonical_name == "BSD35k-CS":
-        raise ValueError(
-            "BSD35k-CS is a noisy training-only dataset and cannot be used by itself for validation or testing. "
-            "Use --dataset BSD10k for clean-only training, or --dataset combined to add BSD35k-CS to the training set."
-        )
-    dataset_roots = resolve_dataset_roots(selection, args.bsd10k_root, args.bsd25k_root)
-    clean_records = load_records_by_dataset_name("BSD10k", dataset_roots["BSD10k"])
-    noisy_records = (
-        load_records_by_dataset_name("BSD35k-CS", dataset_roots["BSD35k-CS"])
-        if "BSD35k-CS" in selection.dataset_names
-        else []
-    )
-    records = clean_records + noisy_records
-    label_specs = build_label_specs(records)
-    label_map = build_label_map(label_specs)
-    id2label = build_id2label(label_specs)
-    experiment_split = build_experiment_split(
-        selection=selection,
-        dataset_roots=dataset_roots,
+    dataset_roots = resolve_dataset_roots(args.bsd10k_root, args.bsd35k_root)
+    train_records, val_records, test_records = get_experiment_records(
+        bsd10k_root=dataset_roots["BSD10k"],
+        bsd35k_root=dataset_roots["BSD35k-CS"],
+        include_bsd35k_cs=args.include_bsd35k_cs,
         fold=args.fold,
         n_splits=args.n_splits,
         validation_size=args.validation_size,
-        split_seed=args.split_seed,
     )
-    experiment_dir = create_experiment_dir(Path(args.output_root), selection)
+    label_specs = build_label_specs(train_records + val_records + test_records)
+    label_map = build_label_map(label_specs)
+    id2label = build_id2label(label_specs)
+    clean_train_size = sum(record["source_dataset"] == "BSD10k" for record in train_records)
+    noisy_train_size = sum(record["source_dataset"] == "BSD35k-CS" for record in train_records)
+    experiment_dir = create_experiment_dir(Path(args.output_root), args.include_bsd35k_cs)
 
     checkpoint_path = resolve_checkpoint_path(
         checkpoint_dir=args.checkpoint_dir,
@@ -645,9 +504,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
     config.finetuned_model = False
     sample_rate = 16000
 
-    train_records = experiment_split.train_records
-    val_records = experiment_split.val_records
-    test_records = experiment_split.test_records
     train_indices = maybe_limit(list(range(len(train_records))), args.max_train_items)
     val_indices = maybe_limit(list(range(len(val_records))), args.max_val_items)
     test_indices = maybe_limit(list(range(len(test_records))), args.max_test_items)
@@ -827,8 +683,8 @@ def run_experiment(args: argparse.Namespace) -> Path:
             }
 
     experiment_config = {
-        "dataset": selection.canonical_name,
-        "dataset_alias": args.dataset,
+        "dataset": "BSD10k",
+        "include_bsd35k_cs": args.include_bsd35k_cs,
         "dataset_roots": {name: str(path) for name, path in dataset_roots.items()},
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_dir": str(Path(args.checkpoint_dir).expanduser().resolve()),
@@ -847,11 +703,11 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "fold": args.fold,
             "n_splits": args.n_splits,
             "validation_size": args.validation_size,
-            "split_seed": args.split_seed,
+            "split_seed": DEFAULT_BSD_SPLIT_SEED,
             "test_dataset": "BSD10k",
             "validation_dataset": "BSD10k",
-            "clean_train_size": experiment_split.clean_train_size,
-            "noisy_train_size": experiment_split.noisy_train_size,
+            "clean_train_size": clean_train_size,
+            "noisy_train_size": noisy_train_size,
             "train_size": len(train_indices),
             "val_size": len(val_indices),
             "test_size": len(test_indices),

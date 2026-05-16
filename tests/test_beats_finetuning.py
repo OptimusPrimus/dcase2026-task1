@@ -5,9 +5,13 @@ from unittest.mock import patch
 
 import torch
 
+from dcase2026_task1.data.splits import (
+    DEFAULT_BSD_SPLIT_SEED,
+    build_experiment_split,
+    get_experiment_records,
+)
 from dcase2026_task1.experiments.beats_finetuning import (
     DEFAULT_CHECKPOINT_ALIAS,
-    build_experiment_split,
     build_id2label,
     build_label_map,
     build_label_specs,
@@ -17,31 +21,15 @@ from dcase2026_task1.experiments.beats_finetuning import (
     maybe_limit,
     resolve_checkpoint_path,
     resolve_dataset_roots,
-    resolve_dataset_selection,
     split_waveforms_into_segments,
 )
 from dcase2026_task1.models.beats import BEATs, BEATsConfig
 
 
-def test_resolve_dataset_selection_names() -> None:
-    ten_k = resolve_dataset_selection("BSD10k")
-    assert ten_k.canonical_name == "BSD10k"
-    assert ten_k.dataset_names == ("BSD10k",)
-
-    twenty_five_k = resolve_dataset_selection("BSD35k-CS")
-    assert twenty_five_k.canonical_name == "BSD35k-CS"
-    assert twenty_five_k.dataset_names == ("BSD35k-CS",)
-
-    combined = resolve_dataset_selection("combined")
-    assert combined.canonical_name == "combined"
-    assert combined.dataset_names == ("BSD10k", "BSD35k-CS")
-
-
-def test_resolve_dataset_roots_for_combined() -> None:
-    selection = resolve_dataset_selection("combined")
-    roots = resolve_dataset_roots(selection, "/tmp/bsd10k", "/tmp/bsd25k")
+def test_resolve_dataset_roots() -> None:
+    roots = resolve_dataset_roots("/tmp/bsd10k", "/tmp/bsd35k")
     assert roots["BSD10k"].as_posix() == "/tmp/bsd10k"
-    assert roots["BSD35k-CS"].as_posix() == "/tmp/bsd25k"
+    assert roots["BSD35k-CS"].as_posix() == "/tmp/bsd35k"
 
 
 def test_build_label_specs_and_maps() -> None:
@@ -106,20 +94,17 @@ def test_build_experiment_split_keeps_noisy_records_out_of_val_and_test() -> Non
         }
         for index in range(6)
     ]
-    selection = resolve_dataset_selection("combined")
-    dataset_roots = resolve_dataset_roots(selection, "/tmp/bsd10k", "/tmp/bsd35k")
-
     with patch(
-        "dcase2026_task1.experiments.beats_finetuning.load_records_by_dataset_name",
+        "dcase2026_task1.data.splits.load_records_by_dataset_name",
         side_effect=lambda dataset_name, root: clean_records if dataset_name == "BSD10k" else noisy_records,
     ):
         split = build_experiment_split(
-            selection=selection,
-            dataset_roots=dataset_roots,
+            bsd10k_root=Path("/tmp/bsd10k"),
+            bsd35k_root=Path("/tmp/bsd35k"),
+            include_bsd35k_cs=True,
             fold=0,
             n_splits=5,
             validation_size=0.2,
-            split_seed=123,
         )
 
     assert all(record["source_dataset"] == "BSD10k" for record in split.val_records)
@@ -128,7 +113,7 @@ def test_build_experiment_split_keeps_noisy_records_out_of_val_and_test() -> Non
     assert sum(record["source_dataset"] == "BSD35k-CS" for record in split.train_records) == len(noisy_records)
 
 
-def test_build_experiment_split_is_reproducible_from_split_seed() -> None:
+def test_build_experiment_split_is_reproducible() -> None:
     clean_records = [
         {
             "sound_id": index,
@@ -139,36 +124,26 @@ def test_build_experiment_split_is_reproducible_from_split_seed() -> None:
         }
         for index in range(20)
     ]
-    selection = resolve_dataset_selection("BSD10k")
-    dataset_roots = resolve_dataset_roots(selection, "/tmp/bsd10k", "/tmp/bsd35k")
 
     with patch(
-        "dcase2026_task1.experiments.beats_finetuning.load_records_by_dataset_name",
+        "dcase2026_task1.data.splits.load_records_by_dataset_name",
         side_effect=lambda dataset_name, root: clean_records,
     ):
         split_a = build_experiment_split(
-            selection=selection,
-            dataset_roots=dataset_roots,
+            bsd10k_root=Path("/tmp/bsd10k"),
+            bsd35k_root=None,
+            include_bsd35k_cs=False,
             fold=1,
             n_splits=5,
             validation_size=0.2,
-            split_seed=777,
         )
         split_b = build_experiment_split(
-            selection=selection,
-            dataset_roots=dataset_roots,
+            bsd10k_root=Path("/tmp/bsd10k"),
+            bsd35k_root=None,
+            include_bsd35k_cs=False,
             fold=1,
             n_splits=5,
             validation_size=0.2,
-            split_seed=777,
-        )
-        split_c = build_experiment_split(
-            selection=selection,
-            dataset_roots=dataset_roots,
-            fold=1,
-            n_splits=5,
-            validation_size=0.2,
-            split_seed=778,
         )
 
     assert [record["sound_id"] for record in split_a.train_records] == [
@@ -180,9 +155,49 @@ def test_build_experiment_split_is_reproducible_from_split_seed() -> None:
     assert [record["sound_id"] for record in split_a.test_records] == [
         record["sound_id"] for record in split_b.test_records
     ]
-    assert [record["sound_id"] for record in split_a.test_records] != [
-        record["sound_id"] for record in split_c.test_records
+    assert split_a.split_seed == DEFAULT_BSD_SPLIT_SEED
+
+
+def test_get_experiment_records_returns_split_records() -> None:
+    clean_records = [
+        {
+            "sound_id": index,
+            "class_idx": index % 2,
+            "class": f"class-{index % 2}",
+            "source_dataset": "BSD10k",
+            "audio_path": Path(f"/tmp/clean_{index}.wav"),
+        }
+        for index in range(20)
     ]
+    noisy_records = [
+        {
+            "sound_id": 100 + index,
+            "class_idx": index % 2,
+            "class": f"class-{index % 2}",
+            "source_dataset": "BSD35k-CS",
+            "audio_path": Path(f"/tmp/noisy_{index}.wav"),
+        }
+        for index in range(4)
+    ]
+
+    with patch(
+        "dcase2026_task1.data.splits.load_records_by_dataset_name",
+        side_effect=lambda dataset_name, root: clean_records if dataset_name == "BSD10k" else noisy_records,
+    ):
+        train_records, val_records, test_records = get_experiment_records(
+            bsd10k_root=Path("/tmp/bsd10k"),
+            bsd35k_root=Path("/tmp/bsd35k"),
+            include_bsd35k_cs=True,
+            fold=0,
+            n_splits=5,
+            validation_size=0.2,
+        )
+
+    assert len(train_records) > 0
+    assert len(val_records) > 0
+    assert len(test_records) > 0
+    assert all(record["source_dataset"] == "BSD10k" for record in val_records)
+    assert all(record["source_dataset"] == "BSD10k" for record in test_records)
 
 
 def test_split_waveforms_into_segments_splits_long_audio() -> None:
