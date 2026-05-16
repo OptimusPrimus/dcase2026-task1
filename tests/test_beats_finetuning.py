@@ -4,6 +4,7 @@ import torch
 
 from dcase2026_task1.experiments.beats_finetuning import (
     DEFAULT_CHECKPOINT_ALIAS,
+    DEFAULT_BEATS_REPO_ROOT,
     OFFICIAL_CHECKPOINT_URLS,
     build_id2label,
     build_label_map,
@@ -66,6 +67,11 @@ def test_resolve_beats_module_dir_from_repo_root(tmp_path) -> None:
     (beats_dir / "backbone.py").write_text("", encoding="utf-8")
 
     assert resolve_beats_module_dir(tmp_path) == beats_dir.resolve()
+
+
+def test_default_beats_repo_root_points_to_vendored_model() -> None:
+    resolved = resolve_beats_module_dir(DEFAULT_BEATS_REPO_ROOT)
+    assert resolved == DEFAULT_BEATS_REPO_ROOT.resolve()
 
 
 def test_resolve_checkpoint_path_from_explicit_path(tmp_path) -> None:

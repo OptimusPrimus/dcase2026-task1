@@ -23,22 +23,22 @@ warnings.filterwarnings(
 DEFAULT_WANDB_PROJECT = "dcase2026-task1"
 DEFAULT_BSD10K_ROOT = Path.home() / "data" / "BSD10k"
 DEFAULT_BSD35K_ROOT = Path.home() / "data" / "BSD35k-CS"
-DEFAULT_BEATS_REPO_ROOT = Path.home() / "repos" / "unilm"
-DEFAULT_CHECKPOINT_DIR = Path.home() / "checkpoints"
+DEFAULT_BEATS_REPO_ROOT = Path(__file__).resolve().parents[1] / "models" / "beats"
+
+DEFAULT_CHECKPOINT_DIR = (
+    Path("/opt/scratch/dcase2026_task1/checkpoints")
+    if Path("/opt/scratch").exists()
+    else Path.home() / "checkpoints"
+)
+
 DEFAULT_OUTPUT_ROOT = (
     Path("/opt/scratch/dcase2026_task1/beats_finetuning")
     if Path("/opt/scratch").exists()
     else Path("outputs/beats_finetuning")
 )
+
 DEFAULT_CHECKPOINT_ALIAS = "beats_iter3plus_as2m"
 DEFAULT_BEATS_REPO_URL = "https://github.com/microsoft/unilm.git"
-OFFICIAL_CHECKPOINT_URLS = {
-    "beats_iter1": "https://1drv.ms/u/s!AqeByhGUtINrgcpmY7IHhgc9q0pT7Q?e=uQuisJ",
-    "beats_iter2": "https://1drv.ms/u/s!AqeByhGUtINrgcpwwEGgUyiI-jQyQw?e=1rP1RI",
-    "beats_iter3": "https://1drv.ms/u/s!AqeByhGUtINrgcpxJUNDxg4eU0r-vA?e=qezPJ5",
-    "beats_iter3plus_as20k": "https://1drv.ms/u/s!AqeByhGUtINrgcpvdNz8-aYim60CIg?e=53V8pg",
-    "beats_iter3plus_as2m": "https://1drv.ms/u/s!AqeByhGUtINrgcpke6_lRSZEKD5j2Q?e=A3FpOf",
-}
 
 
 @dataclass(frozen=True)
@@ -108,26 +108,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the original microsoft/unilm BEATs repository or its `beats/` subdirectory.",
     )
     parser.add_argument(
-        "--checkpoint-path",
-        default=None,
-        help="Path to a BEATs checkpoint from the original repository format.",
-    )
-    parser.add_argument(
         "--checkpoint-dir",
         default=str(DEFAULT_CHECKPOINT_DIR),
         help="Directory used for auto-downloaded BEATs checkpoints.",
     )
     parser.add_argument(
         "--checkpoint-alias",
-        choices=sorted(OFFICIAL_CHECKPOINT_URLS),
+        choices=[DEFAULT_CHECKPOINT_ALIAS],
         default=DEFAULT_CHECKPOINT_ALIAS,
         help="Official BEATs checkpoint alias to download when --checkpoint-path is not provided.",
     )
-    parser.add_argument(
-        "--checkpoint-url",
-        default=None,
-        help="Override URL for checkpoint download. Used with --checkpoint-dir when --checkpoint-path is omitted.",
-    )
+
     parser.add_argument(
         "--trust-checkpoint",
         action=argparse.BooleanOptionalAction,
@@ -175,14 +166,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def resolve_dataset_selection(dataset_name: str) -> DatasetSelection:
     normalized = dataset_name.strip().lower()
-    if normalized in {"bsd10k", "10k"}:
+    if normalized in {"bsd10k"}:
         return DatasetSelection(
             cli_name=dataset_name,
             canonical_name="BSD10k",
             display_name="BSD10k",
             dataset_names=("BSD10k",),
         )
-    if normalized in {"bsd35k-cs", "25k"}:
+    if normalized in {"bsd35k-cs"}:
         return DatasetSelection(
             cli_name=dataset_name,
             canonical_name="BSD35k-CS",
@@ -338,46 +329,16 @@ def load_beats_classes(beats_repo: str | Path) -> tuple[type[Any], type[Any]]:
     module = importlib.import_module("BEATs")
     return module.BEATs, module.BEATsConfig
 
-
-def download_file(url: str, destination: Path) -> Path:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url) as response, destination.open("wb") as handle:
-        total = response.headers.get("Content-Length")
-        total_bytes = int(total) if total is not None else None
-        with tqdm(
-            total=total_bytes,
-            unit="B",
-            unit_scale=True,
-            unit_divisor=1024,
-            desc=destination.name,
-        ) as progress:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                progress.update(len(chunk))
-    return destination
-
-
 def resolve_checkpoint_path(
-    checkpoint_path: str | None,
     checkpoint_dir: str | Path,
-    checkpoint_alias: str,
-    checkpoint_url: str | None,
+    checkpoint_alias: str
 ) -> Path:
-    if checkpoint_path is not None:
-        path = Path(checkpoint_path).expanduser().resolve()
-        if not path.exists():
-            raise FileNotFoundError(f"Checkpoint not found at {path}.")
-        return path
 
     resolved_checkpoint_dir = Path(checkpoint_dir).expanduser().resolve()
-    resolved_checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    url = checkpoint_url or OFFICIAL_CHECKPOINT_URLS[checkpoint_alias]
     destination = resolved_checkpoint_dir / f"{checkpoint_alias}.pt"
     if not destination.exists():
-        download_file(url, destination)
+        raise FileNotFoundError(f"Checkpoint not found at {destination}.")
+
     return destination
 
 
@@ -656,10 +617,8 @@ def run_experiment(args: argparse.Namespace) -> Path:
     experiment_dir = create_experiment_dir(Path(args.output_root), selection)
 
     checkpoint_path = resolve_checkpoint_path(
-        checkpoint_path=args.checkpoint_path,
         checkpoint_dir=args.checkpoint_dir,
-        checkpoint_alias=args.checkpoint_alias,
-        checkpoint_url=args.checkpoint_url,
+        checkpoint_alias=args.checkpoint_alias
     )
     validate_checkpoint_file(checkpoint_path)
     if not args.trust_checkpoint:
@@ -864,7 +823,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_dir": str(Path(args.checkpoint_dir).expanduser().resolve()),
         "checkpoint_alias": args.checkpoint_alias,
-        "checkpoint_url": args.checkpoint_url or OFFICIAL_CHECKPOINT_URLS[args.checkpoint_alias],
         "trust_checkpoint": args.trust_checkpoint,
         "num_labels": len(label_specs),
         "labels": [
