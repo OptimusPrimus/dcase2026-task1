@@ -25,6 +25,11 @@ DEFAULT_BSD10K_ROOT = Path.home() / "data" / "BSD10k"
 DEFAULT_BSD35K_ROOT = Path.home() / "data" / "BSD35k-CS"
 DEFAULT_BEATS_REPO_ROOT = Path.home() / "repos" / "unilm"
 DEFAULT_CHECKPOINT_DIR = Path.home() / "checkpoints"
+DEFAULT_OUTPUT_ROOT = (
+    Path("/opt/scratch/dcase2026_task1/beats_finetuning")
+    if Path("/opt/scratch").exists()
+    else Path("outputs/beats_finetuning")
+)
 DEFAULT_CHECKPOINT_ALIAS = "beats_iter3plus_as2m"
 DEFAULT_BEATS_REPO_URL = "https://github.com/microsoft/unilm.git"
 OFFICIAL_CHECKPOINT_URLS = {
@@ -157,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--precision", default="32-true")
     parser.add_argument("--devices", default="1")
     parser.add_argument("--accelerator", default="auto")
-    parser.add_argument("--output-root", default="outputs/beats_finetuning")
+    parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--wandb-project", default=DEFAULT_WANDB_PROJECT)
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument(
