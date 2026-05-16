@@ -4,7 +4,6 @@ import torch
 
 from dcase2026_task1.experiments.beats_finetuning import (
     DEFAULT_CHECKPOINT_ALIAS,
-    DEFAULT_BEATS_REPO_ROOT,
     OFFICIAL_CHECKPOINT_URLS,
     build_id2label,
     build_label_map,
@@ -14,11 +13,11 @@ from dcase2026_task1.experiments.beats_finetuning import (
     mean_segment_logits,
     maybe_limit,
     resolve_checkpoint_path,
-    resolve_beats_module_dir,
     resolve_dataset_roots,
     resolve_dataset_selection,
     split_waveforms_into_segments,
 )
+from dcase2026_task1.models.beats import BEATs, BEATsConfig
 
 
 def test_resolve_dataset_selection_aliases() -> None:
@@ -60,18 +59,9 @@ def test_maybe_limit() -> None:
     assert maybe_limit([1, 2, 3], 2) == [1, 2]
 
 
-def test_resolve_beats_module_dir_from_repo_root(tmp_path) -> None:
-    beats_dir = tmp_path / "beats"
-    beats_dir.mkdir()
-    (beats_dir / "BEATs.py").write_text("", encoding="utf-8")
-    (beats_dir / "backbone.py").write_text("", encoding="utf-8")
-
-    assert resolve_beats_module_dir(tmp_path) == beats_dir.resolve()
-
-
-def test_default_beats_repo_root_points_to_vendored_model() -> None:
-    resolved = resolve_beats_module_dir(DEFAULT_BEATS_REPO_ROOT)
-    assert resolved == DEFAULT_BEATS_REPO_ROOT.resolve()
+def test_vendored_beats_package_exports_model_classes() -> None:
+    assert BEATs.__name__ == "BEATs"
+    assert BEATsConfig.__name__ == "BEATsConfig"
 
 
 def test_resolve_checkpoint_path_from_explicit_path(tmp_path) -> None:

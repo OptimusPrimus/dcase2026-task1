@@ -13,7 +13,7 @@ import torch.nn as nn
 from torch.nn import LayerNorm
 import torchaudio.compliance.kaldi as ta_kaldi
 
-from backbone import (
+from .backbone import (
     TransformerEncoder,
 )
 
@@ -137,7 +137,9 @@ class BEATs(nn.Module):
             fbank_mean: float = 15.41663,
             fbank_std: float = 6.55582,
     ):
-        fbank = self.preprocess(source, fbank_mean=fbank_mean, fbank_std=fbank_std)
+
+        with torch.amp.autocast(device_type='cuda', enabled=False):
+            fbank = self.preprocess(source, fbank_mean=fbank_mean, fbank_std=fbank_std)
 
         if padding_mask is not None:
             padding_mask = self.forward_padding_mask(fbank, padding_mask)

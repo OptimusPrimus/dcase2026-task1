@@ -13,10 +13,10 @@ import torch.nn as nn
 from torch.nn import LayerNorm
 import torchaudio.compliance.kaldi as ta_kaldi
 
-from backbone import (
+from .backbone import (
     TransformerEncoder,
 )
-from quantizer import (
+from .quantizer import (
     NormEMAVectorQuantizer,
 )
 
@@ -170,4 +170,3 @@ class Tokenizers(nn.Module):
         quantize_feature, embed_loss, embed_ind = self.quantize(quantize_input)
 
         return embed_ind
-

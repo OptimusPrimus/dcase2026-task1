@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
-import sys
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,6 +11,7 @@ from uuid import uuid4
 
 import numpy as np
 from tqdm import tqdm
+from dcase2026_task1.models.beats import BEATs, BEATsConfig
 
 import warnings
 warnings.filterwarnings(
@@ -23,8 +22,6 @@ warnings.filterwarnings(
 DEFAULT_WANDB_PROJECT = "dcase2026-task1"
 DEFAULT_BSD10K_ROOT = Path.home() / "data" / "BSD10k"
 DEFAULT_BSD35K_ROOT = Path.home() / "data" / "BSD35k-CS"
-DEFAULT_BEATS_REPO_ROOT = Path(__file__).resolve().parents[1] / "models" / "beats"
-
 DEFAULT_CHECKPOINT_DIR = (
     Path("/opt/scratch/dcase2026_task1/checkpoints")
     if Path("/opt/scratch").exists()
@@ -38,9 +35,6 @@ DEFAULT_OUTPUT_ROOT = (
 )
 
 DEFAULT_CHECKPOINT_ALIAS = "beats_iter3plus_as2m"
-DEFAULT_BEATS_REPO_URL = "https://github.com/microsoft/unilm.git"
-
-
 @dataclass(frozen=True)
 class DatasetSelection:
     cli_name: str
@@ -103,11 +97,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bsd10k-root", default=None)
     parser.add_argument("--bsd25k-root", default=None)
     parser.add_argument(
-        "--beats-repo",
-        default=str(DEFAULT_BEATS_REPO_ROOT),
-        help="Path to the original microsoft/unilm BEATs repository or its `beats/` subdirectory.",
-    )
-    parser.add_argument(
         "--checkpoint-dir",
         default=str(DEFAULT_CHECKPOINT_DIR),
         help="Directory used for auto-downloaded BEATs checkpoints.",
@@ -127,11 +116,6 @@ def build_parser() -> argparse.ArgumentParser:
             "Allow torch.load(..., weights_only=False) for original BEATs checkpoints. "
             "Disable with --no-trust-checkpoint for untrusted files."
         ),
-    )
-    parser.add_argument(
-        "--beats-repo-url",
-        default=DEFAULT_BEATS_REPO_URL,
-        help="Git URL used when auto-cloning the BEATs repository.",
     )
     parser.add_argument("--fold", type=int, default=0)
     parser.add_argument("--n-splits", type=int, default=5)
@@ -285,49 +269,6 @@ def maybe_limit(indices: list[int], limit: int | None) -> list[int]:
         return indices
     return indices[:limit]
 
-
-def resolve_beats_module_dir(beats_repo: str | Path) -> Path:
-    repo_path = Path(beats_repo).expanduser().resolve()
-    if (repo_path / "BEATs.py").exists() and (repo_path / "backbone.py").exists():
-        return repo_path
-    beats_subdir = repo_path / "beats"
-    if (beats_subdir / "BEATs.py").exists() and (beats_subdir / "backbone.py").exists():
-        return beats_subdir
-    raise FileNotFoundError(
-        f"Could not locate BEATs.py and backbone.py under {repo_path}. "
-        "Pass either the original repo root or its `beats/` subdirectory."
-    )
-
-
-def ensure_beats_repo(beats_repo: str | Path, beats_repo_url: str) -> Path:
-    repo_path = Path(beats_repo).expanduser().resolve()
-    try:
-        return resolve_beats_module_dir(repo_path)
-    except FileNotFoundError:
-        pass
-
-    if repo_path.name == "beats":
-        clone_target = repo_path.parent
-    else:
-        clone_target = repo_path
-    clone_target.parent.mkdir(parents=True, exist_ok=True)
-
-    import subprocess
-
-    subprocess.run(
-        ["git", "clone", "--depth", "1", beats_repo_url, str(clone_target)],
-        check=True,
-    )
-    return resolve_beats_module_dir(repo_path)
-
-
-def load_beats_classes(beats_repo: str | Path) -> tuple[type[Any], type[Any]]:
-    beats_module_dir = resolve_beats_module_dir(beats_repo)
-    beats_module_dir_str = str(beats_module_dir)
-    if beats_module_dir_str not in sys.path:
-        sys.path.insert(0, beats_module_dir_str)
-    module = importlib.import_module("BEATs")
-    return module.BEATs, module.BEATsConfig
 
 def resolve_checkpoint_path(
     checkpoint_dir: str | Path,
@@ -598,8 +539,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
 
     pl, ModelCheckpoint, LearningRateMonitor, WandbLogger = _get_lightning_runtime()
     progress_bar = _get_progress_bar_callback(pl)
-    beats_module_dir = ensure_beats_repo(args.beats_repo, args.beats_repo_url)
-    BEATs, BEATsConfig = load_beats_classes(beats_module_dir)
 
     selection = resolve_dataset_selection(args.dataset)
     dataset_roots = resolve_dataset_roots(selection, args.bsd10k_root, args.bsd25k_root)
@@ -685,7 +624,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     "num_labels": len(label_specs),
                     "freeze_encoder": args.freeze_encoder,
                     "checkpoint_path": str(checkpoint_path),
-                    "beats_repo": str(beats_module_dir),
                 }
             )
 
@@ -818,8 +756,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
         "dataset": selection.canonical_name,
         "dataset_alias": args.dataset,
         "dataset_roots": {name: str(path) for name, path in dataset_roots.items()},
-        "beats_repo": str(beats_module_dir),
-        "beats_repo_url": args.beats_repo_url,
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_dir": str(Path(args.checkpoint_dir).expanduser().resolve()),
         "checkpoint_alias": args.checkpoint_alias,
