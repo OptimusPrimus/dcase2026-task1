@@ -817,8 +817,8 @@ def run_experiment(args: argparse.Namespace) -> Path:
 
     model_checkpoint = ModelCheckpoint(
         dirpath=str(experiment_dir / "checkpoints"),
-        filename="epoch{epoch:02d}-val_macro_f1{val_macro_f1:.4f}",
-        monitor="val_macro_f1",
+        filename="epoch{epoch:02d}-val_hierarchical_f1{val_hierarchical_f1:.4f}",
+        monitor="val_hierarchical_f1",
         mode="max",
         save_top_k=1,
         save_last=True,
