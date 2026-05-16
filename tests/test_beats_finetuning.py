@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import patch
+
 import torch
 
 from dcase2026_task1.experiments.beats_finetuning import (
     DEFAULT_CHECKPOINT_ALIAS,
-    OFFICIAL_CHECKPOINT_URLS,
+    build_experiment_split,
     build_id2label,
     build_label_map,
     build_label_specs,
@@ -20,12 +23,12 @@ from dcase2026_task1.experiments.beats_finetuning import (
 from dcase2026_task1.models.beats import BEATs, BEATsConfig
 
 
-def test_resolve_dataset_selection_aliases() -> None:
-    ten_k = resolve_dataset_selection("10k")
+def test_resolve_dataset_selection_names() -> None:
+    ten_k = resolve_dataset_selection("BSD10k")
     assert ten_k.canonical_name == "BSD10k"
     assert ten_k.dataset_names == ("BSD10k",)
 
-    twenty_five_k = resolve_dataset_selection("25k")
+    twenty_five_k = resolve_dataset_selection("BSD35k-CS")
     assert twenty_five_k.canonical_name == "BSD35k-CS"
     assert twenty_five_k.dataset_names == ("BSD35k-CS",)
 
@@ -65,21 +68,121 @@ def test_vendored_beats_package_exports_model_classes() -> None:
 
 
 def test_resolve_checkpoint_path_from_explicit_path(tmp_path) -> None:
-    checkpoint_path = tmp_path / "model.pt"
+    checkpoint_dir = tmp_path / "cache"
+    checkpoint_dir.mkdir()
+    checkpoint_path = checkpoint_dir / f"{DEFAULT_CHECKPOINT_ALIAS}.pt"
     checkpoint_path.write_text("x", encoding="utf-8")
 
     resolved = resolve_checkpoint_path(
-        checkpoint_path=str(checkpoint_path),
-        checkpoint_dir=tmp_path / "cache",
+        checkpoint_dir=checkpoint_dir,
         checkpoint_alias=DEFAULT_CHECKPOINT_ALIAS,
-        checkpoint_url=None,
     )
 
     assert resolved == checkpoint_path.resolve()
 
 
 def test_official_checkpoint_alias_is_available() -> None:
-    assert DEFAULT_CHECKPOINT_ALIAS in OFFICIAL_CHECKPOINT_URLS
+    assert DEFAULT_CHECKPOINT_ALIAS == "beats_iter3plus_as2m"
+
+
+def test_build_experiment_split_keeps_noisy_records_out_of_val_and_test() -> None:
+    clean_records = [
+        {
+            "sound_id": index,
+            "class_idx": index % 2,
+            "class": f"class-{index % 2}",
+            "source_dataset": "BSD10k",
+            "audio_path": Path(f"/tmp/clean_{index}.wav"),
+        }
+        for index in range(20)
+    ]
+    noisy_records = [
+        {
+            "sound_id": 100 + index,
+            "class_idx": index % 2,
+            "class": f"class-{index % 2}",
+            "source_dataset": "BSD35k-CS",
+            "audio_path": Path(f"/tmp/noisy_{index}.wav"),
+        }
+        for index in range(6)
+    ]
+    selection = resolve_dataset_selection("combined")
+    dataset_roots = resolve_dataset_roots(selection, "/tmp/bsd10k", "/tmp/bsd35k")
+
+    with patch(
+        "dcase2026_task1.experiments.beats_finetuning.load_records_by_dataset_name",
+        side_effect=lambda dataset_name, root: clean_records if dataset_name == "BSD10k" else noisy_records,
+    ):
+        split = build_experiment_split(
+            selection=selection,
+            dataset_roots=dataset_roots,
+            fold=0,
+            n_splits=5,
+            validation_size=0.2,
+            split_seed=123,
+        )
+
+    assert all(record["source_dataset"] == "BSD10k" for record in split.val_records)
+    assert all(record["source_dataset"] == "BSD10k" for record in split.test_records)
+    assert split.noisy_train_size == len(noisy_records)
+    assert sum(record["source_dataset"] == "BSD35k-CS" for record in split.train_records) == len(noisy_records)
+
+
+def test_build_experiment_split_is_reproducible_from_split_seed() -> None:
+    clean_records = [
+        {
+            "sound_id": index,
+            "class_idx": index % 2,
+            "class": f"class-{index % 2}",
+            "source_dataset": "BSD10k",
+            "audio_path": Path(f"/tmp/clean_{index}.wav"),
+        }
+        for index in range(20)
+    ]
+    selection = resolve_dataset_selection("BSD10k")
+    dataset_roots = resolve_dataset_roots(selection, "/tmp/bsd10k", "/tmp/bsd35k")
+
+    with patch(
+        "dcase2026_task1.experiments.beats_finetuning.load_records_by_dataset_name",
+        side_effect=lambda dataset_name, root: clean_records,
+    ):
+        split_a = build_experiment_split(
+            selection=selection,
+            dataset_roots=dataset_roots,
+            fold=1,
+            n_splits=5,
+            validation_size=0.2,
+            split_seed=777,
+        )
+        split_b = build_experiment_split(
+            selection=selection,
+            dataset_roots=dataset_roots,
+            fold=1,
+            n_splits=5,
+            validation_size=0.2,
+            split_seed=777,
+        )
+        split_c = build_experiment_split(
+            selection=selection,
+            dataset_roots=dataset_roots,
+            fold=1,
+            n_splits=5,
+            validation_size=0.2,
+            split_seed=778,
+        )
+
+    assert [record["sound_id"] for record in split_a.train_records] == [
+        record["sound_id"] for record in split_b.train_records
+    ]
+    assert [record["sound_id"] for record in split_a.val_records] == [
+        record["sound_id"] for record in split_b.val_records
+    ]
+    assert [record["sound_id"] for record in split_a.test_records] == [
+        record["sound_id"] for record in split_b.test_records
+    ]
+    assert [record["sound_id"] for record in split_a.test_records] != [
+        record["sound_id"] for record in split_c.test_records
+    ]
 
 
 def test_split_waveforms_into_segments_splits_long_audio() -> None:

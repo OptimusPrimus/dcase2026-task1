@@ -50,6 +50,16 @@ class LabelSpec:
     class_name: str
 
 
+@dataclass(frozen=True)
+class ExperimentSplit:
+    train_records: list[dict[str, Any]]
+    val_records: list[dict[str, Any]]
+    test_records: list[dict[str, Any]]
+    clean_train_size: int
+    noisy_train_size: int
+    split_seed: int
+
+
 class WaveformClassificationDataset:
     def __init__(
         self,
@@ -121,6 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--validation-size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--split-seed", type=int, default=566182)
     parser.add_argument("--max-train-items", type=int, default=None)
     parser.add_argument("--max-val-items", type=int, default=None)
     parser.add_argument("--max-test-items", type=int, default=None)
@@ -209,6 +220,17 @@ def load_dataset_records(
     return list(dataset.records)
 
 
+def load_records_by_dataset_name(dataset_name: str, root: Path) -> list[dict[str, Any]]:
+    from dcase2026_task1.data.datasets import BSDDataset
+
+    dataset = BSDDataset(
+        root=root,
+        dataset_name=dataset_name,
+        load_audio=False,
+    )
+    return list(dataset.records)
+
+
 def build_label_specs(records: list[dict[str, Any]]) -> list[LabelSpec]:
     unique: dict[int, str] = {}
     for record in records:
@@ -262,6 +284,43 @@ def select_fold_split(
     if not 0 <= fold < len(splits):
         raise ValueError(f"fold must be in [0, {len(splits) - 1}], got {fold}.")
     return splits[fold]
+
+
+def build_experiment_split(
+    selection: DatasetSelection,
+    dataset_roots: dict[str, Path],
+    fold: int,
+    n_splits: int,
+    validation_size: float,
+    split_seed: int,
+) -> ExperimentSplit:
+    clean_records = load_records_by_dataset_name("BSD10k", dataset_roots["BSD10k"])
+    noisy_records = (
+        load_records_by_dataset_name("BSD35k-CS", dataset_roots["BSD35k-CS"])
+        if "BSD35k-CS" in selection.dataset_names
+        else []
+    )
+
+    fold_split = select_fold_split(
+        records=clean_records,
+        fold=fold,
+        n_splits=n_splits,
+        validation_size=validation_size,
+        seed=split_seed,
+    )
+
+    train_records = [clean_records[index] for index in fold_split.train_indices]
+    train_records.extend(noisy_records)
+    val_records = [clean_records[index] for index in fold_split.val_indices]
+    test_records = [clean_records[index] for index in fold_split.test_indices]
+    return ExperimentSplit(
+        train_records=train_records,
+        val_records=val_records,
+        test_records=test_records,
+        clean_train_size=len(fold_split.train_indices),
+        noisy_train_size=len(noisy_records),
+        split_seed=split_seed,
+    )
 
 
 def maybe_limit(indices: list[int], limit: int | None) -> list[int]:
@@ -541,17 +600,29 @@ def run_experiment(args: argparse.Namespace) -> Path:
     progress_bar = _get_progress_bar_callback(pl)
 
     selection = resolve_dataset_selection(args.dataset)
+    if selection.canonical_name == "BSD35k-CS":
+        raise ValueError(
+            "BSD35k-CS is a noisy training-only dataset and cannot be used by itself for validation or testing. "
+            "Use --dataset BSD10k for clean-only training, or --dataset combined to add BSD35k-CS to the training set."
+        )
     dataset_roots = resolve_dataset_roots(selection, args.bsd10k_root, args.bsd25k_root)
-    records = load_dataset_records(selection, dataset_roots)
+    clean_records = load_records_by_dataset_name("BSD10k", dataset_roots["BSD10k"])
+    noisy_records = (
+        load_records_by_dataset_name("BSD35k-CS", dataset_roots["BSD35k-CS"])
+        if "BSD35k-CS" in selection.dataset_names
+        else []
+    )
+    records = clean_records + noisy_records
     label_specs = build_label_specs(records)
     label_map = build_label_map(label_specs)
     id2label = build_id2label(label_specs)
-    fold_split = select_fold_split(
-        records=records,
+    experiment_split = build_experiment_split(
+        selection=selection,
+        dataset_roots=dataset_roots,
         fold=args.fold,
         n_splits=args.n_splits,
         validation_size=args.validation_size,
-        seed=args.seed,
+        split_seed=args.split_seed,
     )
     experiment_dir = create_experiment_dir(Path(args.output_root), selection)
 
@@ -574,13 +645,16 @@ def run_experiment(args: argparse.Namespace) -> Path:
     config.finetuned_model = False
     sample_rate = 16000
 
-    train_indices = maybe_limit(fold_split.train_indices, args.max_train_items)
-    val_indices = maybe_limit(fold_split.val_indices, args.max_val_items)
-    test_indices = maybe_limit(fold_split.test_indices, args.max_test_items)
+    train_records = experiment_split.train_records
+    val_records = experiment_split.val_records
+    test_records = experiment_split.test_records
+    train_indices = maybe_limit(list(range(len(train_records))), args.max_train_items)
+    val_indices = maybe_limit(list(range(len(val_records))), args.max_val_items)
+    test_indices = maybe_limit(list(range(len(test_records))), args.max_test_items)
 
-    train_dataset = WaveformClassificationDataset(records, train_indices, label_map, sample_rate)
-    val_dataset = WaveformClassificationDataset(records, val_indices, label_map, sample_rate)
-    test_dataset = WaveformClassificationDataset(records, test_indices, label_map, sample_rate)
+    train_dataset = WaveformClassificationDataset(train_records, train_indices, label_map, sample_rate)
+    val_dataset = WaveformClassificationDataset(val_records, val_indices, label_map, sample_rate)
+    test_dataset = WaveformClassificationDataset(test_records, test_indices, label_map, sample_rate)
 
     class BSDDataModule(pl.LightningDataModule):
         def train_dataloader(self) -> Any:
@@ -773,6 +847,11 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "fold": args.fold,
             "n_splits": args.n_splits,
             "validation_size": args.validation_size,
+            "split_seed": args.split_seed,
+            "test_dataset": "BSD10k",
+            "validation_dataset": "BSD10k",
+            "clean_train_size": experiment_split.clean_train_size,
+            "noisy_train_size": experiment_split.noisy_train_size,
             "train_size": len(train_indices),
             "val_size": len(val_indices),
             "test_size": len(test_indices),
