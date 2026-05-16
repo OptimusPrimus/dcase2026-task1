@@ -108,183 +108,184 @@ def build_prompt(item: dict[str, Any], candidate_classes: list[CandidateClass]) 
     ]
 
     prompt = """
-    You are an audio metadata classifier.
+You are an audio metadata classifier.
 
-    Task:
-    Classify the audio clip into exactly ONE label from the allowed classes below using metadata only.
+Task:
+Classify the audio clip into exactly ONE label from the allowed classes below using metadata only.
 
-    Rules:
-    - Return ONLY the class label (example: `fx-o`) or `unknown`.
-    - Do not return explanations.
-    - Choose the dominant/intended content, not incidental or background sounds.
-    - If metadata is missing or ambiguous return `unknown`.
-    - Prefer the most specific valid class.
+Rules:
+- Return ONLY the class label (example: `fx-o`) or `unknown`.
+- Do not return explanations.
+- Choose the dominant/intended content, not incidental or background sounds.
+- If metadata is missing or ambiguous return `unknown`.
+- Prefer the most specific valid class.
 
-    CLASSES
+CLASSES
 
-    # -------------------------------------------------------------------
-    # MUSIC (`m-*`)
-    # Intentional musical content including melodies, harmonies, rhythms,
-    # vocals, instrumental performances, loops, beats, musical phrases,
-    # musical textures, compositions, or musical productions.
-    # -------------------------------------------------------------------
+# -------------------------------------------------------------------
+# MUSIC (`m-*`)
+# Intentional musical content including melodies, harmonies, rhythms,
+# vocals, instrumental performances, loops, beats, musical phrases,
+# musical textures, compositions, or musical productions.
+# -------------------------------------------------------------------
 
-    1. `m-sp` — Music / Solo percussion
-       Musical content containing only percussion or rhythmic percussion performance.
-       Includes acoustic or electronic drums and unpitched percussion.
-       Examples:
-       drum solo, tabla rhythm, conga groove, cymbal performance, percussion loop
+1. `m-sp` — Music / Solo percussion
+   Musical content containing only percussion or rhythmic percussion performance.
+   Includes acoustic or electronic drums and unpitched percussion.
+   Examples:
+   drum solo, tabla rhythm, conga groove, cymbal performance, percussion loop
 
-    2. `m-si` — Music / Solo instrument
-       Musical performance with exactly one non-percussive instrument OR solo singing.
-       No accompaniment or layered instrumentation.
-       Examples:
-       solo piano melody, solo violin phrase, flute passage, solo vocal singing, guitar riff
+2. `m-si` — Music / Solo instrument
+   Musical performance with exactly one non-percussive instrument OR solo singing.
+   No accompaniment or layered instrumentation.
+   Examples:
+   solo piano melody, solo violin phrase, flute passage, solo vocal singing, guitar riff
 
-    3. `m-m` — Music / Multiple instruments
-       Musical recordings containing more than one instrument or layered musical parts.
-       Includes ensembles, bands, orchestras, accompaniment, backing tracks, and produced songs.
-       Examples:
-       orchestra, band performance, duet, cinematic score, EDM track, song with vocals and instruments
+3. `m-m` — Music / Multiple instruments
+   Musical recordings containing more than one instrument or layered musical parts.
+   Includes ensembles, bands, orchestras, accompaniment, backing tracks, and produced songs.
+   Examples:
+   orchestra, band performance, duet, cinematic score, EDM track, song with vocals and instruments
 
-    # -------------------------------------------------------------------
-    # INSTRUMENT SAMPLES (`is-*`)
-    # Isolated recordings intended as instrument samples, note references,
-    # articulations, scales, chromatic runs, or sound library material.
-    # Usually dry, short, and focused on demonstrating a single sound.
-    # -------------------------------------------------------------------
+# -------------------------------------------------------------------
+# INSTRUMENT SAMPLES (`is-*`)
+# Isolated recordings intended as instrument samples, note references,
+# articulations, scales, chromatic runs, or sound library material.
+# Usually dry, short, and focused on demonstrating a single sound.
+# -------------------------------------------------------------------
 
-    4. `is-p` — Instrument sample / Percussion
-       Isolated percussion instrument samples or hits.
-       Examples:
-       kick sample, snare hit, cymbal strike, bell sample, xylophone note
+4. `is-p` — Instrument sample / Percussion
+   Isolated percussion instrument samples or hits.
+   Examples:
+   kick sample, snare hit, cymbal strike, bell sample, xylophone note
 
-    5. `is-s` — Instrument sample / String
-       Isolated samples from string instruments.
-       Examples:
-       violin sustain note, guitar pluck, harp glissando sample, cello articulation
+5. `is-s` — Instrument sample / String
+   Isolated samples from string instruments.
+   Examples:
+   violin sustain note, guitar pluck, harp glissando sample, cello articulation
 
-    6. `is-w` — Instrument sample / Wind
-       Isolated samples from wind instruments.
-       Examples:
-       flute note, saxophone articulation, trumpet stab, clarinet sustain
+6. `is-w` — Instrument sample / Wind
+   Isolated samples from wind instruments.
+   Examples:
+   flute note, saxophone articulation, trumpet stab, clarinet sustain
 
-    7. `is-k` — Instrument sample / Keyboard instruments
-       Isolated recordings of piano or acoustic/electromechanical keyboard instruments.
-       Excludes synthesized sounds.
-       Examples:
-       piano note, organ chord, harpsichord sample, Rhodes key sample
+7. `is-k` — Instrument sample / Keyboard instruments
+   Isolated recordings of piano or acoustic/electromechanical keyboard instruments.
+   Excludes synthesized sounds.
+   Examples:
+   piano note, organ chord, harpsichord sample, Rhodes key sample
 
-    8. `is-e` — Instrument sample / Synths and electronic
-       Synthesized or electronically generated instrument samples.
-       Includes analog or digital synthesizers and electronic tonal patches.
-       Examples:
-       synth stab, analog bass note, electronic lead sample, FM synth tone
+8. `is-e` — Instrument sample / Synths and electronic
+   Synthesized or electronically generated instrument samples.
+   Includes analog or digital synthesizers and electronic tonal patches.
+   Examples:
+   synth stab, analog bass note, electronic lead sample, FM synth tone
 
-    # -------------------------------------------------------------------
-    # SPEECH (`sp-*`)
-    # Human voice is dominant and speech-oriented.
-    # Includes spoken communication, narration, dialogue, announcements,
-    # broadcast speech, and synthetic speech systems.
-    # -------------------------------------------------------------------
+# -------------------------------------------------------------------
+# SPEECH (`sp-*`)
+# Speech is dominant.
+# Includes spoken communication, narration, dialogue, announcements,
+# broadcast speech, and synthetic speech systems.
+# -------------------------------------------------------------------
 
-    9. `sp-s` — Speech / Solo speech
-        One person speaking clearly.
-        Excludes singing and non-speech vocalizations.
-        Examples:
-        narration, monologue, podcast host, audiobook reading, lecture
+9. `sp-s` — Speech / Solo speech
+    One person speaking clearly.
+    Excludes singing and non-speech vocalizations.
+    Examples:
+    narration, monologue, podcast host, audiobook reading, lecture
 
-    10. `sp-c` — Speech / Conversation or crowd
-        Multiple people speaking or conversational crowd speech.
-        Includes overlapping dialogue and public conversational environments. Excludes non-speech sounds like applause, etc.
-        Examples:
-        interview, discussion, crowd chatter, meeting room, people talking in public
+10. `sp-c` — Speech / Conversation or crowd
+    Multiple people speaking or conversational crowd speech.
+    Includes overlapping dialogue and public conversational environments. Excludes non-speech sounds like applause, etc.
+    Examples:
+    interview, discussion, crowd chatter, meeting room, people talking in public
 
-    11. `sp-p` — Speech / Processed or synthetic
-        Speech transmitted through devices or heavily processed/generated speech.
-        Includes robotic, vocoded, radio, phone, AI-generated, or TTS voices.
-        Examples:
-        radio announcer, walkie-talkie speech, robotic assistant voice, synthetic narration
+11. `sp-p` — Speech / Processed or synthetic
+    Speech transmitted through devices or heavily processed/generated speech.
+    Includes robotic, vocoded, radio, phone, AI-generated, or TTS voices.
+    Examples:
+    radio announcer, walkie-talkie speech, robotic assistant voice, synthetic narration
 
-    # -------------------------------------------------------------------
-    # SOUND EFFECTS (`fx-*`)
-    # Isolated discrete sound events or actions.
-    # Usually foreground sounds occurring one at a time rather than
-    # continuous environmental ambience.
-    # -------------------------------------------------------------------
+# -------------------------------------------------------------------
+# SOUND EFFECTS (`fx-*`)
+# Isolated discrete sound events or actions.
+# Usually foreground sounds occurring one at a time rather than
+# continuous environmental ambience.
+# -------------------------------------------------------------------
 
-    12. `fx-o` — Sound effects / Objects and household appliances
-        Sounds from small objects, tools, domestic items, or household appliances.
-        Examples:
-        door close, cup drop, zipper, keys jingling, microwave beep, scissors, typing
+12. `fx-o` — Sound effects / Objects and household appliances
+    Sounds from small objects, tools, domestic items, or household appliances.
+    Examples:
+    door close, cup drop, zipper, keys jingling, microwave beep, scissors, typing
 
-    13. `fx-v` — Sound effects / Vehicles
-        Sounds produced by transportation vehicles.
-        Examples:
-        car pass-by, motorcycle rev, airplane flyover, train brake, boat engine
+13. `fx-v` — Sound effects / Vehicles
+    Sounds produced by transportation vehicles.
+    Examples:
+    car pass-by, motorcycle rev, airplane flyover, train brake, boat engine
 
-    14. `fx-m` — Sound effects / Machines and engines
-        Mechanical or industrial machine sounds excluding vehicles and small home appliances.
-        Examples:
-        factory machine, drill, chainsaw, engine idle, hydraulic press, generator
+14. `fx-m` — Sound effects / Machines and engines
+    Mechanical or industrial machine sounds excluding vehicles and small home appliances.
+    Examples:
+    factory machine, drill, chainsaw, engine idle, hydraulic press, generator
 
-    15. `fx-h` — Sound effects / Human sounds and actions
-        Human body sounds excluding speech and singing.
-        Examples:
-        footsteps, breathing, coughing, laughing, clapping, heartbeat, chewing, sneezing
+15. `fx-h` — Sound effects / Human sounds and actions
+    Human body sounds excluding speech and singing.
+    Examples:
+    footsteps, breathing, coughing, laughing, clapping, heartbeat, chewing, sneezing
 
-    16. `fx-a` — Sound effects / Animals
-        Animal vocalizations or animal-generated sounds.
-        Examples:
-        dog bark, bird chirp, cat meow, insect buzzing, horse gallop, growling
+16. `fx-a` — Sound effects / Animals
+    Animal vocalizations or animal-generated sounds.
+    Examples:
+    dog bark, bird chirp, cat meow, insect buzzing, horse gallop, growling
 
-    17. `fx-n` — Sound effects / Natural elements and explosions
-        Isolated natural events or elemental sounds.
-        Examples:
-        thunder clap, water splash, fire crackle, rock fall, explosion, gust of wind
+17. `fx-n` — Sound effects / Natural elements and explosions
+    Isolated natural events or elemental sounds.
+    Examples:
+    thunder clap, water splash, fire crackle, rock fall, explosion, gust of wind
 
-    18. `fx-ex` — Sound effects / Experimental
-        Heavily processed, manipulated, abstract, or unconventional sound effects.
-        Often artistic, distorted, reversed, granular, or noisy.
-        Examples:
-        reversed audio, glitch textures, spectral processing, extreme distortion effects
+18. `fx-ex` — Sound effects / Experimental
+    Heavily processed, manipulated, abstract, or unconventional sound effects.
+    Often artistic, distorted, reversed, granular, or noisy.
+    Examples:
+    reversed audio, glitch textures, spectral processing, extreme distortion effects
 
-    19. `fx-el` — Sound effects / Electronic or designed
-        Artificially designed or synthesized non-musical sound effects.
-        Includes UI sounds, sci-fi effects, cartoon sounds, and interface notifications.
-        Examples:
-        notification ping, laser blast, whoosh, arcade sound, UI click, futuristic effect
+19. `fx-el` — Sound effects / Electronic or designed
+    Artificially designed or synthesized non-musical sound effects.
+    Includes UI sounds, sci-fi effects, cartoon sounds, and interface notifications.
+    Examples:
+    notification ping, laser blast, whoosh, arcade sound, UI click, futuristic effect
 
-    # -------------------------------------------------------------------
-    # SOUNDSCAPES (`ss-*`)
-    # Continuous ambient environments with multiple overlapping sound
-    # sources and environmental context.
-    # Focus is on the environment as a whole rather than isolated events.
-    # -------------------------------------------------------------------
+# -------------------------------------------------------------------
+# SOUNDSCAPES (`ss-*`)
+# Continuous ambient environments with multiple overlapping sound
+# sources and environmental context. Might contain speech, music, or 
+# sound effects but the overall environment or atmosphere is the focus.
+# Focus is on the environment as a whole rather than isolated events.
+# -------------------------------------------------------------------
 
-    20. `ss-n` — Soundscape / Nature
-        Ambient recordings from natural outdoor environments.
-        Examples:
-        forest ambience, jungle atmosphere, seaside waves, river ambience, rain in nature
+20. `ss-n` — Soundscape / Nature
+    Ambient recordings from natural outdoor environments.
+    Examples:
+    forest ambience, jungle atmosphere, seaside waves, river ambience, rain in nature
 
-    21. `ss-i` — Soundscape / Indoors
-        Ambient recordings from enclosed or indoor spaces.
-        Examples:
-        office room tone, restaurant ambience, shopping mall atmosphere, factory interior
+21. `ss-i` — Soundscape / Indoors
+    Ambient recordings from enclosed or indoor spaces.
+    Examples:
+    office room tone, restaurant ambience, shopping mall atmosphere, factory interior
 
-    22. `ss-u` — Soundscape / Urban
-        Outdoor human-made environments and city ambiences.
-        Examples:
-        city street ambience, airport terminal, traffic ambience, subway station, marketplace
+22. `ss-u` — Soundscape / Urban
+    Outdoor human-made environments and city ambiences.
+    Examples:
+    city street ambience, airport terminal, traffic ambience, subway station, marketplace
 
-    23. `ss-s` — Soundscape / Synthetic or artificial
-        Artificially generated, designed, fictional, or synthesized environments.
-        Examples:
-        sci-fi ambience, fantasy environment, drone atmosphere, synthetic environmental beds
+23. `ss-s` — Soundscape / Synthetic or artificial
+    Artificially generated, designed, fictional, or synthesized environments.
+    Examples:
+    sci-fi ambience, fantasy environment, drone atmosphere, synthetic environmental beds
 
-    Output format:
-    Return exactly one label or `unknown`.
-    """
+Output format:
+Return exactly one label or `unknown`.
+"""
 
     return (
         prompt + "\n"
@@ -339,8 +340,8 @@ def load_text_model(args: argparse.Namespace) -> GenerativeModel:
             api_key=args.api_key,
             base_url=args.api_base,
             max_new_tokens=args.max_new_tokens,
-            temperature=0.2,
-            top_p=0.85,
+            temperature=0.0,
+            top_p=1.0,
             enable_reasoning=args.enable_reasoning,
         )
     raise ValueError(f"Unsupported model backend: {args.model}")

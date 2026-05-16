@@ -41,6 +41,18 @@ Use a different Hugging Face checkpoint if you want a BEATs-based or other Audio
 python -m dcase2026_task1.experiments.audio_tagging --dataset BSD10k --model-id <huggingface-model-id>
 ```
 
+Fine-tune the original Microsoft BEATs model on BSD audio classification with PyTorch Lightning and log the run to Weights & Biases:
+
+```bash
+python -m dcase2026_task1.experiments.beats_finetuning \
+  --dataset combined \
+  --wandb-project dcase2026-task1
+```
+
+By default, the script auto-clones `https://github.com/microsoft/unilm.git` into `~/repos/unilm` and auto-downloads the official `beats_iter3plus_as2m` checkpoint into `~/checkpoints/beats_iter3plus_as2m.pt`.
+
+The BEATs fine-tuning script uses the original `microsoft/unilm/beats` codebase, accepts `10k` and `25k` as dataset aliases, and maps `25k` to `BSD35k-CS` in this repo. You can override the bootstrap sources with `--beats-repo`, `--beats-repo-url`, `--checkpoint-path`, `--checkpoint-dir`, `--checkpoint-alias`, or `--checkpoint-url`.
+
 Default dataset roots:
 
 - `~/data/BSD35k-CS`

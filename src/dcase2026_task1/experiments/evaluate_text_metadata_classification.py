@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ PARSE_FAILURE_LABEL = "__PARSE_FAILURE__"
 HIERARCHICAL_PARENT_MATCH_SCORE = 0.375
 AUDIOSET_RUN_ID = "20260515_184526_BSD10k_audioset_2794f53e"
 SPEECH_LABEL = "Speech"
-SPEECH_THRESHOLD = 0.5
+SPEECH_THRESHOLD = 0.0
 SPEECH_FALLBACK_CLASS = "fx-h"
 
 
@@ -24,7 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "predictions",
-        help="Path to predictions.jsonl written by text_metadata_classification.",
+        nargs="+",
+        help="One or more predictions.jsonl files written by text_metadata_classification.",
     )
     parser.add_argument(
         "--output",
@@ -148,6 +150,56 @@ def collect_labels(
         y_pred.append(predicted_class)
 
     return y_true, y_pred, parse_failures
+
+
+def _row_identity(row: dict[str, Any]) -> tuple[str, str]:
+    return str(row.get("audio_path") or ""), str(row.get("target_class") or "")
+
+
+def majority_vote_labels(predicted_labels: list[str]) -> str:
+    counts = Counter(predicted_labels)
+    highest_count = max(counts.values())
+    for predicted_label in predicted_labels:
+        if counts[predicted_label] == highest_count:
+            return predicted_label
+    raise ValueError("majority_vote_labels requires at least one predicted label.")
+
+
+def aggregate_prediction_rows(
+    rows_per_prediction_file: list[list[dict[str, Any]]],
+    candidate_map: dict[str, str],
+    audioset_speech_scores: dict[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    if not rows_per_prediction_file:
+        raise ValueError("At least one predictions file is required.")
+
+    reference_rows = rows_per_prediction_file[0]
+    for file_index, rows in enumerate(rows_per_prediction_file[1:], start=2):
+        if len(rows) != len(reference_rows):
+            raise ValueError(
+                f"Predictions file #{file_index} contains {len(rows)} rows, expected {len(reference_rows)}."
+            )
+
+        for row_index, (reference_row, row) in enumerate(zip(reference_rows, rows, strict=True), start=1):
+            if _row_identity(row) != _row_identity(reference_row):
+                raise ValueError(
+                    "Prediction files do not describe the same items in the same order. "
+                    f"Mismatch at row {row_index}: {_row_identity(reference_row)!r} != {_row_identity(row)!r}."
+                )
+
+    predicted_labels_per_file = [
+        collect_labels(rows, candidate_map, audioset_speech_scores)[1]
+        for rows in rows_per_prediction_file
+    ]
+
+    aggregated_rows: list[dict[str, Any]] = []
+    for row_index, reference_row in enumerate(reference_rows):
+        predicted_labels = [predicted_labels[row_index] for predicted_labels in predicted_labels_per_file]
+        aggregated_row = dict(reference_row)
+        aggregated_row["parsed_label"] = majority_vote_labels(predicted_labels)
+        aggregated_rows.append(aggregated_row)
+
+    return aggregated_rows
 
 
 def plot_class_precision_recall(
@@ -313,14 +365,22 @@ def evaluate_predictions(
 
 def main() -> None:
     args = build_parser().parse_args()
-    predictions_path = Path(args.predictions)
-    rows = load_jsonl(predictions_path)
-    candidate_map = load_candidate_map(predictions_path)
+    prediction_paths = [Path(predictions_path) for predictions_path in args.predictions]
+    candidate_map = load_candidate_map(prediction_paths[0])
+    for prediction_path in prediction_paths[1:]:
+        other_candidate_map = load_candidate_map(prediction_path)
+        if other_candidate_map != candidate_map:
+            raise ValueError(
+                f"Candidate classes differ between {prediction_paths[0]} and {prediction_path}."
+            )
+
+    rows_per_prediction_file = [load_jsonl(prediction_path) for prediction_path in prediction_paths]
     audioset_speech_scores = load_audioset_speech_scores()
+    rows = aggregate_prediction_rows(rows_per_prediction_file, candidate_map, audioset_speech_scores)
     y_true, y_pred, _ = collect_labels(rows, candidate_map, audioset_speech_scores)
     summary = evaluate_predictions(rows, candidate_map, audioset_speech_scores)
 
-    output_dir = predictions_path.parent / "evaluation_plots"
+    output_dir = prediction_paths[0].parent / "evaluation_plots"
     output_dir.mkdir(parents=True, exist_ok=True)
     plot_class_precision_recall(
         summary["class_hierarchical_precision"],

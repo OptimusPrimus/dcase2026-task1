@@ -12,8 +12,8 @@ class OpenAIModel(GenerativeModel):
         api_key: str | None = None,
         base_url: str | None = None,
         max_new_tokens: int = 1024,
-        temperature: float = 0.2,
-        top_p: float = 0.85,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
         enable_reasoning: bool = False,
         reasoning_effort: str = "medium",
     ) -> None:
