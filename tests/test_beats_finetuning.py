@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
@@ -24,6 +26,7 @@ from dcase2026_task1.experiments.beats_finetuning import (
     resolve_checkpoint_path,
     resolve_dataset_roots,
     split_waveforms_into_segments,
+    run_experiment,
 )
 from dcase2026_task1.models.beats import BEATs, BEATsConfig
 
@@ -333,3 +336,129 @@ def test_build_lr_lambda_respects_min_learning_rate() -> None:
     assert lr_lambda(2) == 1.0
     assert lr_lambda(5) == 0.25
     assert lr_lambda(6) == 0.25
+
+
+def test_run_experiment_tests_last_trained_parameters(tmp_path) -> None:
+    records = [
+        {
+            "sound_id": index,
+            "class_idx": index % 2,
+            "class": f"class-{index % 2}",
+            "source_dataset": "BSD10k",
+            "audio_path": Path(f"/tmp/sample_{index}.wav"),
+        }
+        for index in range(6)
+    ]
+    test_call: dict[str, object] = {}
+
+    class FakeLightningModule(torch.nn.Module):
+        def save_hyperparameters(self, *_args, **_kwargs) -> None:
+            return None
+
+        def log(self, *_args, **_kwargs) -> None:
+            return None
+
+        def log_dict(self, *_args, **_kwargs) -> None:
+            return None
+
+    class FakeTrainer:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def fit(self, model, datamodule=None) -> None:
+            test_call["fit_model"] = model
+            test_call["fit_datamodule"] = datamodule
+
+        def test(self, model=None, datamodule=None, ckpt_path=None):
+            test_call["test_model"] = model
+            test_call["test_datamodule"] = datamodule
+            test_call["ckpt_path"] = ckpt_path
+            return [{"test/accuracy": 0.5}]
+
+    class FakeLightningNamespace:
+        LightningDataModule = object
+        LightningModule = FakeLightningModule
+        Trainer = FakeTrainer
+
+    class FakeModelCheckpoint:
+        def __init__(self, **_kwargs) -> None:
+            self.best_model_path = "best.ckpt"
+            self.best_model_score = torch.tensor(0.25)
+
+    class FakeLearningRateMonitor:
+        def __init__(self, **_kwargs) -> None:
+            return None
+
+    class FakeBeats(torch.nn.Module):
+        def __init__(self, _config) -> None:
+            super().__init__()
+            self.encoder = torch.nn.Linear(1, 1)
+
+        def load_state_dict(self, _state_dict, strict=False):
+            return [], []
+
+    args = Namespace(
+        bsd10k_root=str(tmp_path / "bsd10k"),
+        bsd35k_root=str(tmp_path / "bsd35k"),
+        include_bsd35k_cs=False,
+        checkpoint_dir=str(tmp_path / "checkpoints"),
+        checkpoint_alias=DEFAULT_CHECKPOINT_ALIAS,
+        trust_checkpoint=True,
+        fold=0,
+        n_splits=5,
+        validation_size=0.2,
+        seed=42,
+        max_train_items=2,
+        max_val_items=2,
+        max_test_items=2,
+        batch_size=2,
+        num_workers=0,
+        learning_rate=3e-5,
+        weight_decay=0.01,
+        head_dropout=0.1,
+        max_epochs=1,
+        warmup_epochs=0.0,
+        lr_decay_start_epoch=None,
+        min_learning_rate=0.0,
+        gradient_clip_val=1.0,
+        accumulate_grad_batches=1,
+        freeze_encoder=False,
+        precision="32-true",
+        devices="1",
+        accelerator="cpu",
+        output_root=str(tmp_path / "outputs"),
+        wandb_project="disabled-project",
+        wandb_entity=None,
+        wandb_mode="disabled",
+    )
+
+    with (
+        patch(
+            "dcase2026_task1.experiments.beats_finetuning._get_lightning_runtime",
+            return_value=(FakeLightningNamespace, FakeModelCheckpoint, FakeLearningRateMonitor, object),
+        ),
+        patch(
+            "dcase2026_task1.experiments.beats_finetuning._get_progress_bar_callback",
+            return_value=object(),
+        ),
+        patch(
+            "dcase2026_task1.experiments.beats_finetuning.get_experiment_records",
+            return_value=(records[:2], records[2:4], records[4:6]),
+        ),
+        patch(
+            "dcase2026_task1.experiments.beats_finetuning.resolve_checkpoint_path",
+            return_value=tmp_path / "beats.pt",
+        ),
+        patch("dcase2026_task1.experiments.beats_finetuning.validate_checkpoint_file"),
+        patch(
+            "torch.load",
+            return_value={"cfg": {"encoder_embed_dim": 1}, "model": {}},
+        ),
+        patch("dcase2026_task1.experiments.beats_finetuning.BEATsConfig", side_effect=lambda cfg: SimpleNamespace(**cfg)),
+        patch("dcase2026_task1.experiments.beats_finetuning.BEATs", FakeBeats),
+    ):
+        run_experiment(args)
+
+    assert test_call["ckpt_path"] is None
+    assert test_call["test_model"] is test_call["fit_model"]
+    assert test_call["test_datamodule"] is test_call["fit_datamodule"]

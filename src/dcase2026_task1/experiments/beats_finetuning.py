@@ -897,7 +897,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
     test_results = trainer.test(
         model=lightning_module,
         datamodule=datamodule,
-        ckpt_path="best",
+        ckpt_path=None,
     )
 
     summary = {
