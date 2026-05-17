@@ -607,18 +607,47 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 batch_size=waveforms.shape[0],
             )
 
+        def _log_wandb_confusion_matrix(
+            self,
+            split: str,
+            labels: np.ndarray,
+            predictions: np.ndarray,
+        ) -> None:
+            if args.wandb_mode == "disabled":
+                return
+            logger = getattr(self, "logger", None)
+            experiment = getattr(logger, "experiment", None)
+            if experiment is None:
+                return
+            try:
+                import wandb
+            except ImportError:
+                return
+            class_names = [spec.class_name for spec in label_specs]
+            experiment.log(
+                {
+                    f"{split}/confusion_matrix": wandb.plot.confusion_matrix(
+                        probs=None,
+                        y_true=labels.tolist(),
+                        preds=predictions.tolist(),
+                        class_names=class_names,
+                    ),
+                },
+                step=self.global_step,
+            )
+
         def training_step(self, batch: dict[str, Any], batch_idx: int) -> Any:
             logits = self(batch["waveforms"], batch["padding_mask"])
             loss = self.loss_fn(logits, batch["labels"])
             accuracy = (logits.argmax(dim=-1) == batch["labels"]).float().mean()
-            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch["labels"].size(0))
-            self.log("train_accuracy", accuracy, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch["labels"].size(0))
+            self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch["labels"].size(0))
+            self.log("train/accuracy", accuracy, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch["labels"].size(0))
             return loss
 
         def validation_step(self, batch: dict[str, Any], batch_idx: int) -> Any:
             logits = self(batch["waveforms"], batch["padding_mask"])
             loss = self.loss_fn(logits, batch["labels"])
-            self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch["labels"].size(0))
+            self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch["labels"].size(0))
             self.validation_outputs.append(
                 {
                     "logits": logits.detach().cpu().numpy(),
@@ -632,14 +661,16 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 return
             logits = np.concatenate([item["logits"] for item in self.validation_outputs], axis=0)
             labels = np.concatenate([item["labels"] for item in self.validation_outputs], axis=0)
+            predictions = logits.argmax(axis=-1)
             metrics = compute_classification_metrics(logits, labels, len(label_specs), id2label=id2label)
-            self.log_dict({f"val_{key}": value for key, value in metrics.items()}, prog_bar=True)
+            self.log_dict({f"val/{key}": value for key, value in metrics.items()}, prog_bar=True)
+            self._log_wandb_confusion_matrix("val", labels, predictions)
             self.validation_outputs.clear()
 
         def test_step(self, batch: dict[str, Any], batch_idx: int) -> Any:
             logits = self(batch["waveforms"], batch["padding_mask"])
             loss = self.loss_fn(logits, batch["labels"])
-            self.log("test_loss", loss, on_step=False, on_epoch=True, batch_size=batch["labels"].size(0))
+            self.log("test/loss", loss, on_step=False, on_epoch=True, batch_size=batch["labels"].size(0))
             self.test_outputs.append(
                 {
                     "logits": logits.detach().cpu().numpy(),
@@ -653,8 +684,10 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 return
             logits = np.concatenate([item["logits"] for item in self.test_outputs], axis=0)
             labels = np.concatenate([item["labels"] for item in self.test_outputs], axis=0)
+            predictions = logits.argmax(axis=-1)
             metrics = compute_classification_metrics(logits, labels, len(label_specs), id2label=id2label)
-            self.log_dict({f"test_{key}": value for key, value in metrics.items()})
+            self.log_dict({f"test/{key}": value for key, value in metrics.items()})
+            self._log_wandb_confusion_matrix("test", labels, predictions)
             self.test_outputs.clear()
 
         def configure_optimizers(self) -> Any:
@@ -752,8 +785,8 @@ def run_experiment(args: argparse.Namespace) -> Path:
 
     model_checkpoint = ModelCheckpoint(
         dirpath=str(experiment_dir / "checkpoints"),
-        filename="epoch{epoch:02d}-val_hierarchical_f1{val_hierarchical_f1:.4f}",
-        monitor="val_hierarchical_f1",
+        filename="epoch{epoch:02d}-step{step:06d}",
+        monitor="val/hierarchical_f1",
         mode="max",
         save_top_k=1,
         save_last=True,
