@@ -11,6 +11,7 @@ from dcase2026_task1.data.splits import (
     DEFAULT_BSD_SPLIT_SEED,
     build_experiment_split,
     get_experiment_records,
+    load_records_by_dataset_name,
 )
 from dcase2026_task1.experiments.beats_finetuning import (
     DEFAULT_CHECKPOINT_ALIAS,
@@ -116,6 +117,26 @@ def test_build_experiment_split_keeps_noisy_records_out_of_val_and_test() -> Non
     assert all(record["source_dataset"] == "BSD10k" for record in split.test_records)
     assert split.noisy_train_size == len(noisy_records)
     assert sum(record["source_dataset"] == "BSD35k-CS" for record in split.train_records) == len(noisy_records)
+
+
+def test_load_records_by_dataset_name_filters_bsd35k_other_classes() -> None:
+    dataset_records = [
+        {"class": "fx-a", "sound_id": 1},
+        {"class": "m-other", "sound_id": 2},
+        {"class": "sp-s", "sound_id": 3},
+        {"class": "fx-other", "sound_id": 4},
+    ]
+
+    class FakeDataset:
+        def __init__(self, root: Path, dataset_name: str, load_audio: bool) -> None:
+            self.records = dataset_records
+
+    with patch("dcase2026_task1.data.datasets.BSDDataset", FakeDataset):
+        bsd35k_records = load_records_by_dataset_name("BSD35k-CS", Path("/tmp/bsd35k"))
+        bsd10k_records = load_records_by_dataset_name("BSD10k", Path("/tmp/bsd10k"))
+
+    assert [record["sound_id"] for record in bsd35k_records] == [1, 3]
+    assert [record["sound_id"] for record in bsd10k_records] == [1, 2, 3, 4]
 
 
 def test_build_experiment_split_is_reproducible() -> None:
