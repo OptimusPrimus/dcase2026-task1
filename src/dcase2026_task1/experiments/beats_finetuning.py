@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
@@ -123,17 +124,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-train-items", type=int, default=None)
     parser.add_argument("--max-val-items", type=int, default=None)
     parser.add_argument("--max-test-items", type=int, default=None)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=6)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=3e-5)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--head-dropout", type=float, default=0.1)
     parser.add_argument("--max-epochs", type=int, default=10)
-    parser.add_argument("--warmup-steps", type=int, default=0)
+    parser.add_argument(
+        "--warmup-epochs",
+        "--warmup-steps",
+        dest="warmup_epochs",
+        type=float,
+        default=0.0,
+        help="Number of epochs used for linear warmup from 0 to the base learning rate.",
+    )
+    parser.add_argument(
+        "--lr-decay-start-epoch",
+        "--lr-decay-start-step",
+        dest="lr_decay_start_epoch",
+        type=float,
+        default=None,
+        help="Epoch at which linear learning-rate decay begins after the constant phase.",
+    )
+    parser.add_argument("--min-learning-rate", type=float, default=0.0)
     parser.add_argument("--gradient-clip-val", type=float, default=1.0)
     parser.add_argument("--accumulate-grad-batches", type=int, default=1)
     parser.add_argument("--freeze-encoder", action="store_true")
-    parser.add_argument("--precision", default="32-true")
+    parser.add_argument("--precision", default="16-mixed")
     parser.add_argument("--devices", default="1")
     parser.add_argument("--accelerator", default="auto")
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
@@ -177,6 +194,46 @@ def build_label_specs(records: list[dict[str, Any]]) -> list[LabelSpec]:
 
 def build_label_map(label_specs: list[LabelSpec]) -> dict[int, int]:
     return {spec.dataset_class_idx: spec.label_id for spec in label_specs}
+
+
+def epochs_to_update_steps(epochs: float | None, update_steps_per_epoch: int) -> int | None:
+    if epochs is None:
+        return None
+
+    return max(0, int(epochs * max(1, update_steps_per_epoch)))
+
+
+def build_lr_lambda(
+    warmup_steps: int,
+    decay_start_step: int | None,
+    total_steps: int,
+    min_lr_scale: float = 0.0,
+):
+    warmup_steps = max(0, warmup_steps)
+    total_steps = max(1, total_steps)
+    min_lr_scale = min(max(0.0, min_lr_scale), 1.0)
+
+    def lr_lambda(current_step: int) -> float:
+        if warmup_steps > 0 and current_step < warmup_steps:
+            if warmup_steps == 1:
+                return 0.0
+            return float(current_step) / float(warmup_steps - 1)
+
+        if decay_start_step is None or decay_start_step >= total_steps:
+            return 1.0
+
+        if current_step < decay_start_step:
+            return 1.0
+
+        decay_span_steps = total_steps - decay_start_step
+        if decay_span_steps <= 1:
+            return min_lr_scale
+
+        decay_progress = min(current_step - decay_start_step, decay_span_steps - 1)
+        decay_fraction = float(decay_progress) / float(decay_span_steps - 1)
+        return 1.0 - ((1.0 - min_lr_scale) * decay_fraction)
+
+    return lr_lambda
 
 
 def build_id2label(label_specs: list[LabelSpec]) -> dict[int, str]:
@@ -511,6 +568,11 @@ def run_experiment(args: argparse.Namespace) -> Path:
     train_dataset = WaveformClassificationDataset(train_records, train_indices, label_map, sample_rate)
     val_dataset = WaveformClassificationDataset(val_records, val_indices, label_map, sample_rate)
     test_dataset = WaveformClassificationDataset(test_records, test_indices, label_map, sample_rate)
+    train_batches_per_epoch = max(1, math.ceil(len(train_dataset) / args.batch_size))
+    update_steps_per_epoch = max(1, math.ceil(train_batches_per_epoch / args.accumulate_grad_batches))
+    total_update_steps = max(1, update_steps_per_epoch * args.max_epochs)
+    warmup_steps = epochs_to_update_steps(args.warmup_epochs, update_steps_per_epoch) or 0
+    decay_start_step = epochs_to_update_steps(args.lr_decay_start_epoch, update_steps_per_epoch)
 
     class BSDDataModule(pl.LightningDataModule):
         def train_dataloader(self) -> Any:
@@ -549,8 +611,14 @@ def run_experiment(args: argparse.Namespace) -> Path:
             self.save_hyperparameters(
                 {
                     "learning_rate": args.learning_rate,
+                    "min_learning_rate": args.min_learning_rate,
                     "weight_decay": args.weight_decay,
-                    "warmup_steps": args.warmup_steps,
+                    "warmup_epochs": args.warmup_epochs,
+                    "warmup_steps": warmup_steps,
+                    "lr_decay_start_epoch": args.lr_decay_start_epoch,
+                    "lr_decay_start_step": decay_start_step,
+                    "update_steps_per_epoch": update_steps_per_epoch,
+                    "total_update_steps": total_update_steps,
                     "num_labels": len(label_specs),
                     "freeze_encoder": args.freeze_encoder,
                     "checkpoint_path": str(checkpoint_path),
@@ -697,15 +765,22 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 weight_decay=args.weight_decay,
             )
 
-            if args.warmup_steps <= 0:
+            if warmup_steps <= 0 and decay_start_step is None:
                 return optimizer
 
-            def lr_lambda(current_step: int) -> float:
-                if current_step < args.warmup_steps:
-                    return float(current_step + 1) / float(max(1, args.warmup_steps))
-                return 1.0
-
-            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+            scheduler = torch.optim.lr_scheduler.LambdaLR(
+                optimizer,
+                lr_lambda=build_lr_lambda(
+                    warmup_steps=warmup_steps,
+                    decay_start_step=decay_start_step,
+                    total_steps=total_update_steps,
+                    min_lr_scale=(
+                        args.min_learning_rate / args.learning_rate
+                        if args.learning_rate > 0
+                        else 0.0
+                    ),
+                ),
+            )
             return {
                 "optimizer": optimizer,
                 "lr_scheduler": {
@@ -752,7 +827,14 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "weight_decay": args.weight_decay,
             "head_dropout": args.head_dropout,
             "max_epochs": args.max_epochs,
-            "warmup_steps": args.warmup_steps,
+            "warmup_epochs": args.warmup_epochs,
+            "warmup_steps": warmup_steps,
+            "lr_decay_start_epoch": args.lr_decay_start_epoch,
+            "lr_decay_start_step": decay_start_step,
+            "min_learning_rate": args.min_learning_rate,
+            "train_batches_per_epoch": train_batches_per_epoch,
+            "update_steps_per_epoch": update_steps_per_epoch,
+            "total_update_steps": total_update_steps,
             "gradient_clip_val": args.gradient_clip_val,
             "accumulate_grad_batches": args.accumulate_grad_batches,
             "freeze_encoder": args.freeze_encoder,

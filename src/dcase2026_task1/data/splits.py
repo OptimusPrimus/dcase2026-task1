@@ -46,7 +46,7 @@ def build_stratified_folds(
         sss = StratifiedShuffleSplit(
             n_splits=1,
             test_size=validation_size,
-            random_state=seed,
+            random_state=seed+11,
         )
         train_idx_rel, val_idx_rel = next(
             sss.split(np.zeros(len(trainval_labels)), trainval_labels)

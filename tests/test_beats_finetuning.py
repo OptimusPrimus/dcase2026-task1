@@ -14,9 +14,11 @@ from dcase2026_task1.experiments.beats_finetuning import (
     DEFAULT_CHECKPOINT_ALIAS,
     build_id2label,
     build_label_map,
+    build_lr_lambda,
     build_label_specs,
     compute_classification_metrics,
     compute_hierarchical_metrics,
+    epochs_to_update_steps,
     mean_segment_logits,
     maybe_limit,
     resolve_checkpoint_path,
@@ -281,3 +283,53 @@ def test_compute_classification_metrics_includes_hierarchical_precision() -> Non
     assert metrics["hierarchical_precision"] == 1.0
     assert metrics["hierarchical_recall"] == 1.0
     assert metrics["hierarchical_f1"] == 1.0
+
+
+def test_epochs_to_update_steps_converts_fractional_epochs() -> None:
+    assert epochs_to_update_steps(0.0, 10) == 0
+    assert epochs_to_update_steps(1.5, 10) == 15
+    assert epochs_to_update_steps(None, 10) is None
+
+
+def test_build_lr_lambda_supports_warmup_constant_and_decay() -> None:
+    lr_lambda = build_lr_lambda(
+        warmup_steps=3,
+        decay_start_step=5,
+        total_steps=10,
+        min_lr_scale=0.0,
+    )
+
+    assert lr_lambda(0) == 0.0
+    assert lr_lambda(1) == 0.5
+    assert lr_lambda(2) == 1.0
+    assert lr_lambda(4) == 1.0
+    assert lr_lambda(5) == 1.0
+    assert lr_lambda(7) == 0.5
+    assert lr_lambda(9) == 0.0
+    assert lr_lambda(10) == 0.0
+
+
+def test_build_lr_lambda_keeps_constant_lr_without_decay() -> None:
+    lr_lambda = build_lr_lambda(
+        warmup_steps=0,
+        decay_start_step=None,
+        total_steps=10,
+        min_lr_scale=0.0,
+    )
+
+    assert lr_lambda(0) == 1.0
+    assert lr_lambda(100) == 1.0
+
+
+def test_build_lr_lambda_respects_min_learning_rate() -> None:
+    lr_lambda = build_lr_lambda(
+        warmup_steps=0,
+        decay_start_step=2,
+        total_steps=6,
+        min_lr_scale=0.25,
+    )
+
+    assert lr_lambda(0) == 1.0
+    assert lr_lambda(2) == 1.0
+    assert lr_lambda(5) == 0.25
+    assert lr_lambda(6) == 0.25
