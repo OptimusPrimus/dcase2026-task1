@@ -25,9 +25,4 @@ command:
   - dcase2026_task1.experiments.beats_finetuning
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
-  - "--learning-rate=${learning_rate}"
-  - "--weight-decay=${weight_decay}"
-  - "--warmup-epochs=${warmup_epochs}"
-  - "--lr-decay-start-epoch=${lr_decay_start_epoch}"
-  - "--min-learning-rate=${min_learning_rate}"
-  - "--max-epochs=${max_epochs}"
+  - ${args}
