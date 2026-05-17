@@ -1,0 +1,28 @@
+program: src/dcase2026_task1/experiments/beats_finetuning.py
+project: dcase2026-task1
+method: bayes
+metric:
+  name: val/hierarchical_f1
+  goal: maximize
+
+parameters:
+  learning_rate:
+    values: [!!float 9e-6, !!float 1e-5, !!float 2e-5, !!float 3e-5]
+  weight_decay:
+    values: [0.0, 0.01]
+  warmup_epochs:
+    values: [0.1, 0.5, 1]
+  lr_decay_start_epoch:
+    values: [1, 5, 10, 15]
+  max_epochs:
+    values: [15, 20, 25]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - -m
+  - dcase2026_task1.experiments.beats_finetuning
+  - --wandb-project=dcase2026-task1
+  - --wandb-mode=online
+  - --include-bsd35k-cs
+  - ${args}
