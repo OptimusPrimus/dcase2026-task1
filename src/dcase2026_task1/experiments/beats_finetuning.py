@@ -124,15 +124,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-train-items", type=int, default=None)
     parser.add_argument("--max-val-items", type=int, default=None)
     parser.add_argument("--max-test-items", type=int, default=None)
-    parser.add_argument("--batch-size", "--batch_size", type=int, default=6)
-    parser.add_argument("--num-workers", "--num_workers", type=int, default=4)
-    parser.add_argument("--learning-rate", "--learning_rate", type=float, default=3e-5)
-    parser.add_argument("--weight-decay", "--weight_decay", type=float, default=0.01)
+    parser.add_argument("--batch-size", type=int, default=6)
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--learning-rate", type=float, default=3e-5)
+    parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--head-dropout", type=float, default=0.1)
-    parser.add_argument("--max-epochs", "--max_epochs", type=int, default=10)
+    parser.add_argument("--max-epochs", type=int, default=10)
     parser.add_argument(
         "--warmup-epochs",
-        "--warmup_epochs",
         "--warmup-steps",
         dest="warmup_epochs",
         type=float,
@@ -141,14 +140,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--lr-decay-start-epoch",
-        "--lr_decay_start_epoch",
         "--lr-decay-start-step",
         dest="lr_decay_start_epoch",
         type=float,
         default=None,
         help="Epoch at which linear learning-rate decay begins after the constant phase.",
     )
-    parser.add_argument("--min-learning-rate", "--min_learning_rate", type=float, default=0.0)
+    parser.add_argument("--min-learning-rate", type=float, default=0.0)
     parser.add_argument("--gradient-clip-val", type=float, default=1.0)
     parser.add_argument("--accumulate-grad-batches", type=int, default=1)
     parser.add_argument("--freeze-encoder", action="store_true")
