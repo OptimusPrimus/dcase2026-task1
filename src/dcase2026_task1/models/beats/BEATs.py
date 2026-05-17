@@ -45,6 +45,7 @@ class BEATsConfig:
         self.activation_dropout: float = 0.0  # dropout probability after activation in FFN
         self.encoder_layerdrop: float = 0.0  # probability of dropping a tarnsformer layer
         self.dropout_input: float = 0.0  # dropout to apply to the input (after feat extr)
+        self.patchout_u: float = 0.0  # proportion of tokens to drop before the encoder during training
 
         # positional embeddings
         self.conv_pos: int = 128  # number of filters for convolutional positional embeddings
@@ -100,6 +101,70 @@ class BEATs(nn.Module):
             self.predictor = nn.Linear(cfg.encoder_embed_dim, cfg.predictor_class)
         else:
             self.predictor = None
+
+    def apply_patchout(
+            self,
+            features: torch.Tensor,
+            padding_mask: Optional[torch.Tensor],
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        patchout_u = float(getattr(self.cfg, "patchout_u", 0.0))
+        if not self.training or patchout_u <= 0.0:
+            return features, padding_mask
+
+        patchout_u = min(patchout_u, 1.0)
+        batch_size, seq_len, embed_dim = features.shape
+        if seq_len <= 1:
+            return features, padding_mask
+
+        original_padding_mask = padding_mask
+        if padding_mask is None:
+            padding_mask = torch.zeros(
+                batch_size,
+                seq_len,
+                dtype=torch.bool,
+                device=features.device,
+            )
+
+        kept_features = []
+        max_kept_tokens = 0
+
+        for batch_index in range(batch_size):
+            valid_indices = (~padding_mask[batch_index]).nonzero(as_tuple=False).squeeze(-1)
+            valid_count = int(valid_indices.numel())
+            if valid_count == 0:
+                keep_indices = valid_indices
+            else:
+                keep_count = max(1, int(round(valid_count * (1.0 - patchout_u))))
+                if keep_count >= valid_count:
+                    keep_indices = valid_indices
+                else:
+                    sampled = valid_indices[torch.randperm(valid_count, device=features.device)[:keep_count]]
+                    keep_indices = sampled.sort().values
+            kept = features[batch_index, keep_indices]
+            kept_features.append(kept)
+            max_kept_tokens = max(max_kept_tokens, kept.shape[0])
+
+        if max_kept_tokens == seq_len:
+            return features, original_padding_mask
+
+        padded_features = features.new_zeros((batch_size, max_kept_tokens, embed_dim))
+        padded_mask = torch.ones(
+            batch_size,
+            max_kept_tokens,
+            dtype=torch.bool,
+            device=features.device,
+        )
+        for batch_index, kept in enumerate(kept_features):
+            kept_count = kept.shape[0]
+            if kept_count == 0:
+                continue
+            padded_features[batch_index, :kept_count] = kept
+            padded_mask[batch_index, :kept_count] = False
+
+        if original_padding_mask is None and not padded_mask.any():
+            padded_mask = None
+
+        return padded_features, padded_mask
 
     def forward_padding_mask(
             self,
@@ -157,6 +222,7 @@ class BEATs(nn.Module):
             features = self.post_extract_proj(features)
 
         x = self.dropout_input(features)
+        x, padding_mask = self.apply_patchout(x, padding_mask)
 
         x, layer_results = self.encoder(
             x,
