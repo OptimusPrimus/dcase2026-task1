@@ -1,4 +1,5 @@
 program: src/dcase2026_task1/experiments/beats_finetuning.py
+project: dcase2026-task1
 method: bayes
 metric:
   name: val/hierarchical_f1
