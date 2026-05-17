@@ -74,10 +74,7 @@ def load_records_by_dataset_name(dataset_name: str, root: Path) -> list[dict[str
         dataset_name=dataset_name,
         load_audio=False,
     )
-    records = list(dataset.records)
-    if dataset_name == "BSD35k-CS":
-        records = [record for record in records if not str(record["class"]).endswith("-other")]
-    return records
+    return list(dataset.records)
 
 
 def build_experiment_split(

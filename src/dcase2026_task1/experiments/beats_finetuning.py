@@ -129,7 +129,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", "--learning_rate", type=float, default=3e-5)
     parser.add_argument("--weight-decay", "--weight_decay", type=float, default=0.01)
     parser.add_argument("--head-dropout", type=float, default=0.1)
-    parser.add_argument("--patchout-u", "--patchout_u", type=float, default=0.0)
     parser.add_argument("--max-epochs", "--max_epochs", type=int, default=10)
     parser.add_argument(
         "--warmup-epochs",
@@ -562,7 +561,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
     )
     config = BEATsConfig(checkpoint["cfg"])
     config.finetuned_model = False
-    config.patchout_u = args.patchout_u
     sample_rate = 16000
 
     train_indices = maybe_limit(list(range(len(train_records))), args.max_train_items)
@@ -621,7 +619,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     "warmup_steps": warmup_steps,
                     "lr_decay_start_epoch": args.lr_decay_start_epoch,
                     "lr_decay_start_step": decay_start_step,
-                    "patchout_u": args.patchout_u,
                     "update_steps_per_epoch": update_steps_per_epoch,
                     "total_update_steps": total_update_steps,
                     "num_labels": len(label_specs),
@@ -831,7 +828,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "learning_rate": args.learning_rate,
             "weight_decay": args.weight_decay,
             "head_dropout": args.head_dropout,
-            "patchout_u": args.patchout_u,
             "max_epochs": args.max_epochs,
             "warmup_epochs": args.warmup_epochs,
             "warmup_steps": warmup_steps,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +11,6 @@ from dcase2026_task1.data.splits import (
     DEFAULT_BSD_SPLIT_SEED,
     build_experiment_split,
     get_experiment_records,
-    load_records_by_dataset_name,
 )
 from dcase2026_task1.experiments.beats_finetuning import (
     DEFAULT_CHECKPOINT_ALIAS,
@@ -60,55 +58,6 @@ def test_maybe_limit() -> None:
 def test_vendored_beats_package_exports_model_classes() -> None:
     assert BEATs.__name__ == "BEATs"
     assert BEATsConfig.__name__ == "BEATsConfig"
-
-
-def test_beats_patchout_u_drops_tokens_only_during_training() -> None:
-    config = BEATsConfig(
-        {
-            "input_patch_size": 1,
-            "embed_dim": 2,
-            "encoder_embed_dim": 2,
-            "encoder_layers": 1,
-            "encoder_ffn_embed_dim": 8,
-            "encoder_attention_heads": 1,
-            "dropout": 0.0,
-            "attention_dropout": 0.0,
-            "activation_dropout": 0.0,
-            "encoder_layerdrop": 0.0,
-            "dropout_input": 0.0,
-            "conv_pos": 1,
-            "conv_pos_groups": 1,
-            "patchout_u": 0.5,
-        }
-    )
-    model = BEATs(config)
-
-    captured: dict[str, torch.Tensor | None] = {}
-
-    class FakeEncoder(torch.nn.Module):
-        def forward(self, x, padding_mask=None):
-            captured["x"] = x
-            captured["padding_mask"] = padding_mask
-            return x, []
-
-    model.encoder = FakeEncoder()
-    source = torch.zeros(2, 160)
-    fake_fbank = torch.arange(2 * 2 * 3, dtype=torch.float32).reshape(2, 2, 3)
-
-    with patch.object(model, "preprocess", return_value=fake_fbank):
-        model.train()
-        torch.manual_seed(0)
-        train_features, train_padding_mask = model.extract_features(source)
-
-        assert captured["x"] is not None
-        assert train_features.shape == (2, 3, 2)
-        assert train_padding_mask is None
-
-        model.eval()
-        eval_features, eval_padding_mask = model.extract_features(source)
-
-    assert eval_features.shape == (2, 6, 2)
-    assert eval_padding_mask is None
 
 
 def test_resolve_checkpoint_path_from_explicit_path(tmp_path) -> None:
@@ -167,26 +116,6 @@ def test_build_experiment_split_keeps_noisy_records_out_of_val_and_test() -> Non
     assert all(record["source_dataset"] == "BSD10k" for record in split.test_records)
     assert split.noisy_train_size == len(noisy_records)
     assert sum(record["source_dataset"] == "BSD35k-CS" for record in split.train_records) == len(noisy_records)
-
-
-def test_load_records_by_dataset_name_filters_bsd35k_other_classes() -> None:
-    dataset_records = [
-        {"class": "fx-a", "sound_id": 1},
-        {"class": "m-other", "sound_id": 2},
-        {"class": "sp-s", "sound_id": 3},
-        {"class": "fx-other", "sound_id": 4},
-    ]
-
-    class FakeDataset:
-        def __init__(self, root: Path, dataset_name: str, load_audio: bool) -> None:
-            self.records = dataset_records
-
-    with patch("dcase2026_task1.data.datasets.BSDDataset", FakeDataset):
-        bsd35k_records = load_records_by_dataset_name("BSD35k-CS", Path("/tmp/bsd35k"))
-        bsd10k_records = load_records_by_dataset_name("BSD10k", Path("/tmp/bsd10k"))
-
-    assert [record["sound_id"] for record in bsd35k_records] == [1, 3]
-    assert [record["sound_id"] for record in bsd10k_records] == [1, 2, 3, 4]
 
 
 def test_build_experiment_split_is_reproducible() -> None:
@@ -423,8 +352,8 @@ def test_run_experiment_tests_last_trained_parameters(tmp_path) -> None:
     test_call: dict[str, object] = {}
 
     class FakeLightningModule(torch.nn.Module):
-        def save_hyperparameters(self, values) -> None:
-            self.hparams = values
+        def save_hyperparameters(self, *_args, **_kwargs) -> None:
+            return None
 
         def log(self, *_args, **_kwargs) -> None:
             return None
@@ -487,7 +416,6 @@ def test_run_experiment_tests_last_trained_parameters(tmp_path) -> None:
         learning_rate=3e-5,
         weight_decay=0.01,
         head_dropout=0.1,
-        patchout_u=0.25,
         max_epochs=1,
         warmup_epochs=0.0,
         lr_decay_start_epoch=None,
@@ -529,13 +457,8 @@ def test_run_experiment_tests_last_trained_parameters(tmp_path) -> None:
         patch("dcase2026_task1.experiments.beats_finetuning.BEATsConfig", side_effect=lambda cfg: SimpleNamespace(**cfg)),
         patch("dcase2026_task1.experiments.beats_finetuning.BEATs", FakeBeats),
     ):
-        experiment_dir = run_experiment(args)
+        run_experiment(args)
 
     assert test_call["ckpt_path"] is None
     assert test_call["test_model"] is test_call["fit_model"]
     assert test_call["test_datamodule"] is test_call["fit_datamodule"]
-    assert test_call["fit_model"].hparams["patchout_u"] == 0.25
-
-    config_path = experiment_dir / "config.json"
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert config["training"]["patchout_u"] == 0.25
