@@ -22,14 +22,17 @@ from dcase2026_task1.experiments.beats_finetuning import (
     compute_classification_metrics,
     compute_hierarchical_metrics,
     epochs_to_update_steps,
-    mean_segment_logits,
     maybe_limit,
     resolve_checkpoint_path,
     resolve_dataset_roots,
-    split_waveforms_into_segments,
     run_experiment,
 )
-from dcase2026_task1.models.beats import BEATs, BEATsConfig
+from dcase2026_task1.models.audio_wrappers import (
+    ArbitraryLengthAudioWrapper,
+    mean_segment_outputs,
+    split_waveforms_into_segments,
+)
+from dcase2026_task1.models.beats import BEATs, BEATsConfig, ChunkedBEATs
 
 
 def test_resolve_dataset_roots() -> None:
@@ -59,6 +62,7 @@ def test_maybe_limit() -> None:
 def test_vendored_beats_package_exports_model_classes() -> None:
     assert BEATs.__name__ == "BEATs"
     assert BEATsConfig.__name__ == "BEATsConfig"
+    assert ChunkedBEATs.__name__ == "ChunkedBEATs"
 
 
 def test_resolve_checkpoint_path_from_explicit_path(tmp_path) -> None:
@@ -269,8 +273,8 @@ def test_split_waveforms_into_segments_splits_long_audio() -> None:
     assert torch.equal(segment_batch_indices, torch.tensor([0, 0, 1]))
 
 
-def test_mean_segment_logits_averages_segments_per_sample() -> None:
-    segment_logits = torch.tensor(
+def test_mean_segment_outputs_averages_segments_per_sample() -> None:
+    segment_outputs = torch.tensor(
         [
             [1.0, 3.0],
             [5.0, 7.0],
@@ -279,9 +283,56 @@ def test_mean_segment_logits_averages_segments_per_sample() -> None:
     )
     segment_batch_indices = torch.tensor([0, 0, 1])
 
-    logits = mean_segment_logits(segment_logits, segment_batch_indices, batch_size=2)
+    outputs = mean_segment_outputs(segment_outputs, segment_batch_indices, batch_size=2)
 
-    assert torch.allclose(logits, torch.tensor([[3.0, 5.0], [2.0, 4.0]]))
+    assert torch.allclose(outputs, torch.tensor([[3.0, 5.0], [2.0, 4.0]]))
+
+
+def test_arbitrary_length_audio_wrapper_chunks_and_aggregates() -> None:
+    class FakeEncoder(torch.nn.Module):
+        pass
+
+    def segment_forward(
+        _model: torch.nn.Module,
+        waveforms: torch.Tensor,
+        padding_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if padding_mask is None:
+            valid = torch.ones_like(waveforms, dtype=torch.bool)
+        else:
+            valid = ~padding_mask
+        return torch.stack(
+            [
+                (waveforms * valid).sum(dim=1),
+                valid.sum(dim=1),
+            ],
+            dim=1,
+        )
+
+    wrapper = ArbitraryLengthAudioWrapper(
+        FakeEncoder(),
+        sample_rate=2,
+        max_audio_seconds=2,
+        segment_forward=segment_forward,
+        aggregate_outputs=mean_segment_outputs,
+    )
+
+    waveforms = torch.tensor(
+        [
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0, 0.0],
+            [10.0, 11.0, 12.0, 13.0, 0.0, 0.0, 0.0, 0.0],
+        ]
+    )
+    padding_mask = torch.tensor(
+        [
+            [False, False, False, False, False, False, True, True],
+            [False, False, False, False, True, True, True, True],
+        ]
+    )
+
+    outputs = wrapper(waveforms, padding_mask)
+
+    assert torch.allclose(outputs, torch.tensor([[10.5, 3.0], [46.0, 4.0]]))
 
 
 def test_compute_hierarchical_metrics_match_text_eval_behavior() -> None:

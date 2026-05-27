@@ -1,72 +1,49 @@
 # DCASE 2026 Task 1
 
-Minimal project structure for working with the `BSD35k-CS` and `BSD10k` datasets.
+## Setup
 
-## Layout
+This repository requires Python 3.10 or newer.
 
-- `src/dcase2026_task1/data/datasets.py`: PyTorch datasets
-- `src/dcase2026_task1/models/<model_name>/base.py`: model runtime implementation
-- `src/dcase2026_task1/experiments/text_metadata_classification.py`: metadata-only text classification experiment
-- `src/dcase2026_task1/experiments/audio_tagging.py`: audio-input tagging experiment with per-class probabilities
-
-## Quick start
-
-Run the metadata-only experiment against `BSD10k` with the Qwen backend:
+1. Create the conda environment:
 
 ```bash
-python -m dcase2026_task1.experiments.text_metadata_classification --dataset BSD10k --model qwen
+conda create -n dcase2026-task1 python=3.10
 ```
 
-Dry-run the same experiment without submitting model requests:
+2. Activate it:
 
 ```bash
-python -m dcase2026_task1.experiments.text_metadata_classification --dataset BSD10k --model qwen --dry-run --max-items 5
+conda activate dcase2026-task1
 ```
 
-The legacy `train` module now forwards to the same experiment:
-
-```bash
-python -m dcase2026_task1.train --dataset BSD10k --model qwen
-```
-
-Run an AudioSet audio-tagging model on raw audio and write probabilities for every tag:
-
-```bash
-python -m dcase2026_task1.experiments.audio_tagging --dataset BSD10k --max-items 5
-```
-
-Use a different Hugging Face checkpoint if you want a BEATs-based or other AudioSet-compatible tagger:
-
-```bash
-python -m dcase2026_task1.experiments.audio_tagging --dataset BSD10k --model-id <huggingface-model-id>
-```
-
-Fine-tune the original Microsoft BEATs model on BSD audio classification with PyTorch Lightning and log the run to Weights & Biases:
-
-```bash
-python -m dcase2026_task1.experiments.beats_finetuning \
-  --dataset combined \
-  --wandb-project dcase2026-task1
-```
-
-By default, the script auto-clones `https://github.com/microsoft/unilm.git` into `~/repos/unilm` and auto-downloads the official `beats_iter3plus_as2m` checkpoint into `~/checkpoints/beats_iter3plus_as2m.pt`.
-
-The BEATs fine-tuning script uses the original `microsoft/unilm/beats` codebase, accepts `10k` and `25k` as dataset aliases, and maps `25k` to `BSD35k-CS` in this repo. You can override the bootstrap sources with `--beats-repo`, `--beats-repo-url`, `--checkpoint-path`, `--checkpoint-dir`, `--checkpoint-alias`, or `--checkpoint-url`.
-
-Default dataset roots:
-
-- `~/data/BSD35k-CS`
-- `~/data/BSD10k`
-
-Each root is expected to contain:
-
-- `audio/`
-- `metadata/`
-  - `BSD35k-CS_metadata.csv` or `BSD10k_metadata.csv`
-  - `BST_description.csv` or `BTS_description.csv`
-
-Install the runtime dependencies before running experiments:
+3. Install the package in editable mode:
 
 ```bash
 python -m pip install -e '.[dev]'
+```
+
+4. Place the datasets in the default locations, or pass custom paths to the training script:
+
+- `~/data/BSD10k`
+- `~/data/BSD35k-CS`
+
+Each dataset root is expected to contain:
+
+- `audio/`
+- `metadata/`
+
+The BEATs fine-tuning script will auto-download the official `beats_iter3plus_as2m` checkpoint into `~/checkpoints` by default if it is not already present.
+
+## Example: Fine-Tune BEATs
+
+```bash
+python -m dcase2026_task1.experiments.beats_finetuning \
+  --wandb-project=dcase2026-task1 \
+  --wandb-mode=online \
+  --learning_rate=3e-05 \
+  --lr_decay_start_epoch=1 \
+  --max_epochs=10 \
+  --min_learning_rate=1e-06 \
+  --warmup_epochs=1 \
+  --weight_decay=0.01
 ```

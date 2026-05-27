@@ -17,7 +17,7 @@ from dcase2026_task1.data.splits import (
     DEFAULT_BSD_SPLIT_SEED,
     get_experiment_records,
 )
-from dcase2026_task1.models.beats import BEATs, BEATsConfig
+from dcase2026_task1.models.beats import BEATs, BEATsConfig, ChunkedBEATs
 
 import warnings
 warnings.filterwarnings(
@@ -332,77 +332,6 @@ def collate_waveforms(features: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def split_waveforms_into_segments(
-    waveforms: Any,
-    padding_mask: Any,
-    max_segment_samples: int,
-) -> tuple[Any, Any, Any]:
-    import torch
-
-    batch_size, waveform_length = waveforms.shape
-    segment_waveforms: list[Any] = []
-    segment_padding_masks: list[Any] = []
-    segment_batch_indices: list[int] = []
-
-    for batch_index in range(batch_size):
-        if padding_mask is None:
-            valid_length = waveform_length
-        else:
-            valid_length = int((~padding_mask[batch_index]).sum().item())
-        valid_length = max(valid_length, 1)
-
-        sample_waveform = waveforms[batch_index]
-        for start in range(0, valid_length, max_segment_samples):
-            stop = min(start + max_segment_samples, valid_length)
-            segment_length = stop - start
-
-            segment = torch.zeros(
-                max_segment_samples,
-                dtype=waveforms.dtype,
-                device=waveforms.device,
-            )
-            segment[:segment_length] = sample_waveform[start:stop]
-            segment_waveforms.append(segment)
-
-            segment_mask = torch.ones(
-                max_segment_samples,
-                dtype=torch.bool,
-                device=waveforms.device,
-            )
-            segment_mask[:segment_length] = False
-            segment_padding_masks.append(segment_mask)
-            segment_batch_indices.append(batch_index)
-
-    return (
-        torch.stack(segment_waveforms, dim=0),
-        torch.stack(segment_padding_masks, dim=0),
-        torch.tensor(segment_batch_indices, dtype=torch.long, device=waveforms.device),
-    )
-
-
-def mean_segment_logits(
-    segment_logits: Any,
-    segment_batch_indices: Any,
-    batch_size: int,
-) -> Any:
-    import torch
-
-    logits = torch.zeros(
-        (batch_size, segment_logits.shape[-1]),
-        dtype=segment_logits.dtype,
-        device=segment_logits.device,
-    )
-    counts = torch.zeros(batch_size, dtype=segment_logits.dtype, device=segment_logits.device)
-
-    logits.index_add_(0, segment_batch_indices, segment_logits)
-    counts.index_add_(
-        0,
-        segment_batch_indices,
-        torch.ones(segment_batch_indices.shape[0], dtype=segment_logits.dtype, device=segment_logits.device),
-    )
-    return logits / counts.unsqueeze(-1).clamp_min(1.0)
-
-
 def compute_classification_metrics(
     logits: Any,
     labels: Any,
@@ -627,13 +556,13 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 }
             )
 
-            self.beats = BEATs(config)
+            beats_model = BEATs(config)
             state_dict = {
                 key: value
                 for key, value in checkpoint["model"].items()
                 if not key.startswith("predictor.")
             }
-            missing_keys, unexpected_keys = self.beats.load_state_dict(state_dict, strict=False)
+            missing_keys, unexpected_keys = beats_model.load_state_dict(state_dict, strict=False)
             if unexpected_keys:
                 raise RuntimeError(f"Unexpected BEATs checkpoint keys: {unexpected_keys}")
             non_predictor_missing = [
@@ -641,6 +570,12 @@ def run_experiment(args: argparse.Namespace) -> Path:
             ]
             if non_predictor_missing:
                 raise RuntimeError(f"Missing BEATs checkpoint keys: {non_predictor_missing}")
+
+            self.beats = ChunkedBEATs(
+                beats_model,
+                sample_rate=sample_rate,
+                max_audio_seconds=10,
+            )
 
             if args.freeze_encoder:
                 for parameter in self.beats.parameters():
@@ -651,31 +586,10 @@ def run_experiment(args: argparse.Namespace) -> Path:
             self.loss_fn = torch.nn.CrossEntropyLoss()
             self.validation_outputs: list[dict[str, Any]] = []
             self.test_outputs: list[dict[str, Any]] = []
-            self.max_audio_seconds = 10
-            self.sample_rate = sample_rate
 
         def forward(self, waveforms: Any, padding_mask: Any) -> Any:
-            max_segment_samples = self.max_audio_seconds * self.sample_rate
-            segmented_waveforms, segmented_padding_mask, segment_batch_indices = split_waveforms_into_segments(
-                waveforms,
-                padding_mask,
-                max_segment_samples=max_segment_samples,
-            )
-            features, feature_padding_mask = self.beats.extract_features(
-                segmented_waveforms,
-                padding_mask=segmented_padding_mask,
-            )
-            if feature_padding_mask is not None:
-                valid = (~feature_padding_mask).unsqueeze(-1)
-                pooled = (features * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
-            else:
-                pooled = features.mean(dim=1)
-            segment_logits = self.classifier(self.dropout(pooled))
-            return mean_segment_logits(
-                segment_logits,
-                segment_batch_indices,
-                batch_size=waveforms.shape[0],
-            )
+            pooled = self.beats(waveforms, padding_mask)
+            return self.classifier(self.dropout(pooled))
 
         def _log_wandb_confusion_matrix(
             self,
