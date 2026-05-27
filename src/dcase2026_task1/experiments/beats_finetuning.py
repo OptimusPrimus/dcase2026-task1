@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
@@ -41,6 +42,7 @@ DEFAULT_OUTPUT_ROOT = (
 )
 
 DEFAULT_CHECKPOINT_ALIAS = "beats_iter3plus_as2m"
+MAX_RANDOM_SEED = (2**32) - 1
 
 
 @dataclass(frozen=True)
@@ -120,7 +122,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fold", type=int, default=0)
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--validation-size", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed. If omitted, a random 32-bit seed is chosen for the run.",
+    )
     parser.add_argument("--max-train-items", type=int, default=None)
     parser.add_argument("--max-val-items", type=int, default=None)
     parser.add_argument("--max-test-items", type=int, default=None)
@@ -256,6 +263,12 @@ def maybe_limit(indices: list[int], limit: int | None) -> list[int]:
     if limit is None:
         return indices
     return indices[:limit]
+
+
+def resolve_seed(seed: int | None) -> int:
+    if seed is not None:
+        return seed
+    return random.SystemRandom().randint(0, MAX_RANDOM_SEED)
 
 
 def resolve_checkpoint_path(
@@ -453,6 +466,9 @@ def _get_progress_bar_callback(pl: Any) -> Any:
 
 def run_experiment(args: argparse.Namespace) -> Path:
     import torch
+
+    seed = resolve_seed(args.seed)
+    args.seed = seed
 
     pl, ModelCheckpoint, LearningRateMonitor, WandbLogger = _get_lightning_runtime()
     progress_bar = _get_progress_bar_callback(pl)
@@ -780,6 +796,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             mode=args.wandb_mode,
         )
         logger.experiment.config.update(experiment_config, allow_val_change=True)
+        logger.experiment.config.update({"seed": seed}, allow_val_change=True)
 
     model_checkpoint = ModelCheckpoint(
         dirpath=str(experiment_dir / "checkpoints"),
@@ -804,8 +821,9 @@ def run_experiment(args: argparse.Namespace) -> Path:
         log_every_n_steps=10,
     )
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
 
     datamodule = BSDDataModule()
     lightning_module = BEATsLightningModule()

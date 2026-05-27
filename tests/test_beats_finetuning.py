@@ -16,6 +16,7 @@ from dcase2026_task1.data.splits import (
 from dcase2026_task1.experiments.beats_finetuning import (
     DEFAULT_CHECKPOINT_ALIAS,
     build_id2label,
+    build_parser,
     build_label_map,
     build_lr_lambda,
     build_label_specs,
@@ -25,6 +26,7 @@ from dcase2026_task1.experiments.beats_finetuning import (
     maybe_limit,
     resolve_checkpoint_path,
     resolve_dataset_roots,
+    resolve_seed,
     run_experiment,
 )
 from dcase2026_task1.models.audio_wrappers import (
@@ -57,6 +59,26 @@ def test_build_label_specs_and_maps() -> None:
 def test_maybe_limit() -> None:
     assert maybe_limit([1, 2, 3], None) == [1, 2, 3]
     assert maybe_limit([1, 2, 3], 2) == [1, 2]
+
+
+def test_parser_seed_defaults_to_none() -> None:
+    args = build_parser().parse_args([])
+    assert args.seed is None
+
+
+def test_resolve_seed_returns_explicit_seed() -> None:
+    assert resolve_seed(1234) == 1234
+
+
+def test_resolve_seed_generates_random_seed_when_missing() -> None:
+    with patch(
+        "dcase2026_task1.experiments.beats_finetuning.random.SystemRandom.randint",
+        return_value=987654321,
+    ) as randint:
+        resolved = resolve_seed(None)
+
+    assert resolved == 987654321
+    randint.assert_called_once_with(0, (2**32) - 1)
 
 
 def test_vendored_beats_package_exports_model_classes() -> None:
