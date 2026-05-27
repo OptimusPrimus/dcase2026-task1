@@ -47,3 +47,15 @@ python -m dcase2026_task1.experiments.beats_finetuning \
   --warmup_epochs=1 \
   --weight_decay=0.01
 ```
+
+## Example: Start a Sweep
+
+```bash
+wandb sweep sweeps/beats_finetuning.yaml
+```
+
+Start a W&B agent for the created sweep:
+
+```bash
+wandb agent dcase2026-task1/<SWEEP_ID>
+```
