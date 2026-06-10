@@ -8,7 +8,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
 import numpy as np
@@ -18,6 +18,7 @@ from dcase2026_task1.data.splits import (
     DEFAULT_BSD_SPLIT_SEED,
     get_experiment_records,
 )
+from dcase2026_task1.models.bart_decoder import BartMetadataDecoder
 from dcase2026_task1.models.beats import BEATs, BEATsConfig, ChunkedBEATs
 
 import warnings
@@ -44,12 +45,15 @@ DEFAULT_CHECKPOINT_DIR = (
 )
 
 DEFAULT_OUTPUT_ROOT = (
-    Path("/opt/scratch/paul/dcase2026_task1/beats_finetuning")
+    Path("/opt/scratch/paul/dcase2026_task1/training")
     if Path("/opt/scratch").exists()
-    else Path("outputs/beats_finetuning")
+    else Path("outputs/training")
 )
 
 DEFAULT_CHECKPOINT_ALIAS = "beats_iter3plus_as2m"
+DEFAULT_EMBEDDING_MODEL = "beats"
+DEFAULT_DECODER_MODEL = "none"
+DEFAULT_BART_MODEL_ID = "facebook/bart-base"
 MAX_RANDOM_SEED = (2**32) - 1
 
 
@@ -58,6 +62,29 @@ class LabelSpec:
     label_id: int
     dataset_class_idx: int
     class_name: str
+
+
+class AudioEmbeddingModel(Protocol):
+    output_dim: int
+
+    def __call__(
+        self,
+        waveforms: Any,
+        padding_mask: Any,
+        metadata: list[dict[str, Any]] | None = None,
+    ) -> Any:
+        ...
+
+
+class MetadataDecoderModel(Protocol):
+    output_dim: int
+
+    def __call__(
+        self,
+        audio_embeddings: Any,
+        metadata: list[dict[str, Any]] | None = None,
+    ) -> Any:
+        ...
 
 
 class WaveformClassificationDataset:
@@ -91,12 +118,13 @@ class WaveformClassificationDataset:
             "label": self.label_map[int(record["class_idx"])],
             "sound_id": int(record["sound_id"]),
             "source_dataset": str(record["source_dataset"]),
+            "metadata": dict(record["metadata"]),
         }
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Fine-tune the original Microsoft BEATs model on BSD datasets with PyTorch Lightning."
+        description="Train an audio classifier on BSD datasets with PyTorch Lightning."
     )
     parser.add_argument("--bsd10k-root", default=None)
     parser.add_argument("--bsd35k-root", default=None)
@@ -107,15 +135,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Add BSD35k-CS to the training split only.",
     )
     parser.add_argument(
+        "--embedding-model",
+        default=DEFAULT_EMBEDDING_MODEL,
+        help="Audio embedding backbone used by the training script.",
+    )
+    parser.add_argument(
+        "--decoder-model",
+        default=DEFAULT_DECODER_MODEL,
+        help="Optional metadata decoder applied after the audio encoder.",
+    )
+    parser.add_argument(
+        "--decoder-pretrained-model-name",
+        default=DEFAULT_BART_MODEL_ID,
+        help="Hugging Face model id used when --decoder-model=bart.",
+    )
+    parser.add_argument(
         "--checkpoint-dir",
         default=str(DEFAULT_CHECKPOINT_DIR),
-        help="Directory used for auto-downloaded BEATs checkpoints.",
+        help="Directory used for embedding-model checkpoints.",
     )
     parser.add_argument(
         "--checkpoint-alias",
-        choices=[DEFAULT_CHECKPOINT_ALIAS],
         default=DEFAULT_CHECKPOINT_ALIAS,
-        help="Official BEATs checkpoint alias to download when --checkpoint-path is not provided.",
+        help="Checkpoint alias to load for the selected embedding model.",
     )
 
     parser.add_argument(
@@ -257,10 +299,14 @@ def build_id2label(label_specs: list[LabelSpec]) -> dict[int, str]:
     return {spec.label_id: spec.class_name for spec in label_specs}
 
 
-def create_experiment_dir(output_root: Path, include_bsd35k_cs: bool) -> Path:
+def create_experiment_dir(
+    output_root: Path,
+    include_bsd35k_cs: bool,
+    embedding_model: str,
+) -> Path:
     dataset_name = "BSD10k_plus_BSD35k-CS" if include_bsd35k_cs else "BSD10k"
     experiment_id = (
-        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{dataset_name}_beats_{uuid4().hex[:8]}"
+        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{dataset_name}_{embedding_model}_{uuid4().hex[:8]}"
     )
     experiment_dir = output_root / experiment_id
     experiment_dir.mkdir(parents=True, exist_ok=False)
@@ -313,6 +359,86 @@ def validate_checkpoint_file(path: Path) -> None:
         )
 
 
+def load_embedding_checkpoint(args: argparse.Namespace, torch_module: Any) -> dict[str, Any]:
+    checkpoint_path = resolve_checkpoint_path(
+        checkpoint_dir=args.checkpoint_dir,
+        checkpoint_alias=args.checkpoint_alias,
+    )
+    validate_checkpoint_file(checkpoint_path)
+    if not args.trust_checkpoint:
+        raise ValueError(
+            "Original BEATs checkpoints require torch.load(..., weights_only=False). "
+            "Re-run with --trust-checkpoint only if the checkpoint source is trusted."
+        )
+    checkpoint = torch_module.load(
+        str(checkpoint_path),
+        map_location="cpu",
+        weights_only=False,
+    )
+    return {
+        "path": checkpoint_path,
+        "checkpoint": checkpoint,
+    }
+
+
+def build_beats_embedding_model(
+    checkpoint: dict[str, Any],
+    sample_rate: int,
+) -> AudioEmbeddingModel:
+    config = BEATsConfig(checkpoint["cfg"])
+    config.finetuned_model = False
+    beats_model = BEATs(config)
+    state_dict = {
+        key: value
+        for key, value in checkpoint["model"].items()
+        if not key.startswith("predictor.")
+    }
+    missing_keys, unexpected_keys = beats_model.load_state_dict(state_dict, strict=False)
+    if unexpected_keys:
+        raise RuntimeError(f"Unexpected BEATs checkpoint keys: {unexpected_keys}")
+    non_predictor_missing = [
+        key for key in missing_keys if not key.startswith("predictor")
+    ]
+    if non_predictor_missing:
+        raise RuntimeError(f"Missing BEATs checkpoint keys: {non_predictor_missing}")
+
+    model = ChunkedBEATs(
+        beats_model,
+        sample_rate=sample_rate,
+        max_audio_seconds=10,
+    )
+    model.output_dim = int(config.encoder_embed_dim)
+    return model
+
+
+def build_embedding_model(
+    args: argparse.Namespace,
+    checkpoint: dict[str, Any],
+    sample_rate: int,
+) -> AudioEmbeddingModel:
+    if args.embedding_model == "beats":
+        return build_beats_embedding_model(checkpoint, sample_rate=sample_rate)
+    raise ValueError(f"Unsupported embedding model: {args.embedding_model!r}")
+
+
+def build_metadata_decoder(
+    args: argparse.Namespace,
+    audio_embedding_dim: int,
+) -> MetadataDecoderModel | None:
+    if args.decoder_model == "none":
+        return None
+    if args.decoder_model == "bart":
+        return BartMetadataDecoder(
+            audio_embedding_dim=audio_embedding_dim,
+            model_id=args.decoder_pretrained_model_name,
+        )
+    raise ValueError(f"Unsupported decoder model: {args.decoder_model!r}")
+
+
+def pool_embedding_sequence(embedding_sequence: Any) -> Any:
+    return embedding_sequence.mean(dim=1)
+
+
 def _resample_audio(
     waveform: np.ndarray,
     source_sample_rate: int,
@@ -350,6 +476,7 @@ def collate_waveforms(features: list[dict[str, Any]]) -> dict[str, Any]:
         "waveforms": waveforms,
         "padding_mask": padding_mask,
         "labels": labels,
+        "metadata": [dict(feature["metadata"]) for feature in features],
     }
 
 
@@ -495,25 +622,15 @@ def run_experiment(args: argparse.Namespace) -> Path:
     id2label = build_id2label(label_specs)
     clean_train_size = sum(record["source_dataset"] == "BSD10k" for record in train_records)
     noisy_train_size = sum(record["source_dataset"] == "BSD35k-CS" for record in train_records)
-    experiment_dir = create_experiment_dir(Path(args.output_root), args.include_bsd35k_cs)
+    experiment_dir = create_experiment_dir(
+        Path(args.output_root),
+        args.include_bsd35k_cs,
+        args.embedding_model,
+    )
 
-    checkpoint_path = resolve_checkpoint_path(
-        checkpoint_dir=args.checkpoint_dir,
-        checkpoint_alias=args.checkpoint_alias
-    )
-    validate_checkpoint_file(checkpoint_path)
-    if not args.trust_checkpoint:
-        raise ValueError(
-            "Original BEATs checkpoints require torch.load(..., weights_only=False). "
-            "Re-run with --trust-checkpoint only if the checkpoint source is trusted."
-        )
-    checkpoint = torch.load(
-        str(checkpoint_path),
-        map_location="cpu",
-        weights_only=False,
-    )
-    config = BEATsConfig(checkpoint["cfg"])
-    config.finetuned_model = False
+    checkpoint_info = load_embedding_checkpoint(args, torch)
+    checkpoint_path = checkpoint_info["path"]
+    checkpoint = checkpoint_info["checkpoint"]
     sample_rate = 16000
 
     train_indices = maybe_limit(list(range(len(train_records))), args.max_train_items)
@@ -560,11 +677,14 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 pin_memory=True,
             )
 
-    class BEATsLightningModule(pl.LightningModule):
+    class ClassificationLightningModule(pl.LightningModule):
         def __init__(self) -> None:
             super().__init__()
             self.save_hyperparameters(
                 {
+                    "embedding_model": args.embedding_model,
+                    "decoder_model": args.decoder_model,
+                    "decoder_pretrained_model_name": args.decoder_pretrained_model_name,
                     "learning_rate": args.learning_rate,
                     "min_learning_rate": args.min_learning_rate,
                     "weight_decay": args.weight_decay,
@@ -580,40 +700,50 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 }
             )
 
-            beats_model = BEATs(config)
-            state_dict = {
-                key: value
-                for key, value in checkpoint["model"].items()
-                if not key.startswith("predictor.")
-            }
-            missing_keys, unexpected_keys = beats_model.load_state_dict(state_dict, strict=False)
-            if unexpected_keys:
-                raise RuntimeError(f"Unexpected BEATs checkpoint keys: {unexpected_keys}")
-            non_predictor_missing = [
-                key for key in missing_keys if not key.startswith("predictor")
-            ]
-            if non_predictor_missing:
-                raise RuntimeError(f"Missing BEATs checkpoint keys: {non_predictor_missing}")
-
-            self.beats = ChunkedBEATs(
-                beats_model,
+            self.embedding_model = build_embedding_model(
+                args,
+                checkpoint=checkpoint,
                 sample_rate=sample_rate,
-                max_audio_seconds=10,
+            )
+            self.metadata_decoder = build_metadata_decoder(
+                args,
+                audio_embedding_dim=self.embedding_model.output_dim,
             )
 
             if args.freeze_encoder:
-                for parameter in self.beats.parameters():
+                for parameter in self.embedding_model.parameters():
                     parameter.requires_grad = False
 
             self.dropout = torch.nn.Dropout(args.head_dropout)
-            self.classifier = torch.nn.Linear(config.encoder_embed_dim, len(label_specs))
+            classifier_input_dim = (
+                self.metadata_decoder.output_dim
+                if self.metadata_decoder is not None
+                else self.embedding_model.output_dim
+            )
+            self.classifier = torch.nn.Linear(classifier_input_dim, len(label_specs))
             self.loss_fn = torch.nn.CrossEntropyLoss()
             self.validation_outputs: list[dict[str, Any]] = []
             self.test_outputs: list[dict[str, Any]] = []
 
-        def forward(self, waveforms: Any, padding_mask: Any) -> Any:
-            pooled = self.beats(waveforms, padding_mask)
-            return self.classifier(self.dropout(pooled))
+        def forward(
+            self,
+            waveforms: Any,
+            padding_mask: Any,
+            metadata: list[dict[str, Any]] | None = None,
+        ) -> Any:
+            embedding_sequence = self.embedding_model(
+                waveforms,
+                padding_mask,
+                metadata=metadata,
+            )
+            if self.metadata_decoder is not None:
+                features = self.metadata_decoder(
+                    embedding_sequence,
+                    metadata=metadata,
+                )
+            else:
+                features = pool_embedding_sequence(embedding_sequence)
+            return self.classifier(self.dropout(features))
 
         def _log_wandb_confusion_matrix(
             self,
@@ -645,7 +775,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             )
 
         def training_step(self, batch: dict[str, Any], batch_idx: int) -> Any:
-            logits = self(batch["waveforms"], batch["padding_mask"])
+            logits = self(batch["waveforms"], batch["padding_mask"], metadata=batch["metadata"])
             loss = self.loss_fn(logits, batch["labels"])
             accuracy = (logits.argmax(dim=-1) == batch["labels"]).float().mean()
             self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch["labels"].size(0))
@@ -653,7 +783,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             return loss
 
         def validation_step(self, batch: dict[str, Any], batch_idx: int) -> Any:
-            logits = self(batch["waveforms"], batch["padding_mask"])
+            logits = self(batch["waveforms"], batch["padding_mask"], metadata=batch["metadata"])
             loss = self.loss_fn(logits, batch["labels"])
             self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch["labels"].size(0))
             self.validation_outputs.append(
@@ -676,7 +806,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             self.validation_outputs.clear()
 
         def test_step(self, batch: dict[str, Any], batch_idx: int) -> Any:
-            logits = self(batch["waveforms"], batch["padding_mask"])
+            logits = self(batch["waveforms"], batch["padding_mask"], metadata=batch["metadata"])
             loss = self.loss_fn(logits, batch["labels"])
             self.log("test/loss", loss, on_step=False, on_epoch=True, batch_size=batch["labels"].size(0))
             self.test_outputs.append(
@@ -734,6 +864,9 @@ def run_experiment(args: argparse.Namespace) -> Path:
         "dataset": "BSD10k",
         "include_bsd35k_cs": args.include_bsd35k_cs,
         "dataset_roots": {name: str(path) for name, path in dataset_roots.items()},
+        "embedding_model": args.embedding_model,
+        "decoder_model": args.decoder_model,
+        "decoder_pretrained_model_name": args.decoder_pretrained_model_name,
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_dir": str(Path(args.checkpoint_dir).expanduser().resolve()),
         "checkpoint_alias": args.checkpoint_alias,
@@ -790,7 +923,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "mode": args.wandb_mode,
             "run_name": experiment_dir.name,
         },
-        "beats_checkpoint_cfg": checkpoint["cfg"],
+        "embedding_checkpoint_cfg": checkpoint["cfg"],
     }
     write_json(experiment_dir / "config.json", experiment_config)
 
@@ -834,7 +967,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
     random.seed(seed)
 
     datamodule = BSDDataModule()
-    lightning_module = BEATsLightningModule()
+    lightning_module = ClassificationLightningModule()
     trainer.fit(lightning_module, datamodule=datamodule)
     test_results = trainer.test(
         model=lightning_module,
@@ -862,7 +995,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
 def main() -> None:
     args = build_parser().parse_args()
     experiment_dir = run_experiment(args)
-    print(f"Wrote BEATs fine-tuning outputs to {experiment_dir}")
+    print(f"Wrote training outputs to {experiment_dir}")
 
 
 if __name__ == "__main__":

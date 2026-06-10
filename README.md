@@ -32,12 +32,12 @@ Each dataset root is expected to contain:
 - `audio/`
 - `metadata/`
 
-The BEATs fine-tuning script will auto-download the official `beats_iter3plus_as2m` checkpoint into `~/checkpoints` by default if it is not already present.
+The training script uses the official `beats_iter3plus_as2m` checkpoint from `~/checkpoints` by default.
 
-## Example: Fine-Tune BEATs
+## Example: Train With BEATs
 
 ```bash
-python -m dcase2026_task1.experiments.beats_finetuning \
+python -m dcase2026_task1.experiments.training \
   --wandb-project=dcase2026-task1 \
   --wandb-mode=online \
   --learning_rate=3e-05 \
@@ -48,10 +48,18 @@ python -m dcase2026_task1.experiments.beats_finetuning \
   --weight_decay=0.01
 ```
 
+To enable the metadata decoder:
+
+```bash
+python -m dcase2026_task1.experiments.training \
+  --decoder-model=bart \
+  --decoder-pretrained-model-name=facebook/bart-base
+```
+
 ## Example: Start a Sweep
 
 ```bash
-wandb sweep sweeps/beats_finetuning.yaml
+wandb sweep sweeps/training_learning_rate.yaml
 ```
 
 Start a W&B agent for the created sweep:

@@ -58,7 +58,7 @@ def mean_segment_outputs(
     batch_size: int,
 ) -> torch.Tensor:
     outputs = torch.zeros(
-        (batch_size, segment_outputs.shape[-1]),
+        (batch_size, *segment_outputs.shape[1:]),
         dtype=segment_outputs.dtype,
         device=segment_outputs.device,
     )
@@ -70,7 +70,8 @@ def mean_segment_outputs(
         segment_batch_indices,
         torch.ones(segment_batch_indices.shape[0], dtype=segment_outputs.dtype, device=segment_outputs.device),
     )
-    return outputs / counts.unsqueeze(-1).clamp_min(1.0)
+    count_shape = (batch_size, *([1] * (segment_outputs.ndim - 1)))
+    return outputs / counts.view(count_shape).clamp_min(1.0)
 
 
 class ArbitraryLengthAudioWrapper(nn.Module):
