@@ -1,0 +1,9 @@
+{
+  "batch_id": "batch_6a29eaf8353c81908d517538b70d5d2f",
+  "input_file_id": "file-MPDjAafSFMB3AxPxzaeM43",
+  "created_at": "2026-06-11T00:53:44",
+  "endpoint": "/v1/responses",
+  "output_file_id": null,
+  "error_file_id": null,
+  "status": "validating"
+}
