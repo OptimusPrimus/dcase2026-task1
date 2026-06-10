@@ -45,7 +45,7 @@ class BartMetadataDecoder(nn.Module):
         tag_texts: list[str] = []
         for item in metadata:
             tags = item.get("tags", "") if item is not None else ""
-            tag_texts.append(str(tags))
+            tag_texts.append(str(" ".join(tags.split(","))))
         if len(tag_texts) != batch_size:
             raise ValueError(
                 f"Expected metadata for {batch_size} items, got {len(tag_texts)}."
