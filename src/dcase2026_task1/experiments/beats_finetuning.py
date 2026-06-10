@@ -38,13 +38,13 @@ DEFAULT_BSD35K_ROOT = (
     else Path.home() / "data" / "BSD35k-CS"
 )
 DEFAULT_CHECKPOINT_DIR = (
-    Path("/opt/scratch/dcase2026_task1/checkpoints")
+    Path("/opt/scratch/paul/dcase2026_task1/checkpoints")
     if Path("/opt/scratch").exists()
     else Path.home() / "checkpoints"
 )
 
 DEFAULT_OUTPUT_ROOT = (
-    Path("/opt/scratch/dcase2026_task1/beats_finetuning")
+    Path("/opt/scratch/paul/dcase2026_task1/beats_finetuning")
     if Path("/opt/scratch").exists()
     else Path("outputs/beats_finetuning")
 )
