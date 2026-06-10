@@ -19,7 +19,7 @@ parameters:
   min_learning_rate:
     value: !!float 1e-7
   max_epochs:
-    values: 20
+    value: 20
 
 command:
   - ${env}
