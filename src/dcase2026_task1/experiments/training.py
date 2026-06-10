@@ -72,7 +72,7 @@ class AudioEmbeddingModel(Protocol):
         waveforms: Any,
         padding_mask: Any,
         metadata: list[dict[str, Any]] | None = None,
-    ) -> Any:
+    ) -> tuple[Any, Any]:
         ...
 
 
@@ -82,6 +82,7 @@ class MetadataDecoderModel(Protocol):
     def __call__(
         self,
         audio_embeddings: Any,
+        audio_embedding_padding_mask: Any = None,
         metadata: list[dict[str, Any]] | None = None,
     ) -> Any:
         ...
@@ -439,6 +440,16 @@ def pool_embedding_sequence(embedding_sequence: Any) -> Any:
     return embedding_sequence.mean(dim=1)
 
 
+def masked_mean_embedding_sequence(
+    embedding_sequence: Any,
+    embedding_padding_mask: Any | None = None,
+) -> Any:
+    if embedding_padding_mask is None:
+        return pool_embedding_sequence(embedding_sequence)
+    valid = (~embedding_padding_mask).unsqueeze(-1)
+    return (embedding_sequence * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
+
+
 def _resample_audio(
     waveform: np.ndarray,
     source_sample_rate: int,
@@ -731,7 +742,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             padding_mask: Any,
             metadata: list[dict[str, Any]] | None = None,
         ) -> Any:
-            embedding_sequence = self.embedding_model(
+            embedding_sequence, embedding_padding_mask = self.embedding_model(
                 waveforms,
                 padding_mask,
                 metadata=metadata,
@@ -739,10 +750,14 @@ def run_experiment(args: argparse.Namespace) -> Path:
             if self.metadata_decoder is not None:
                 features = self.metadata_decoder(
                     embedding_sequence,
+                    audio_embedding_padding_mask=embedding_padding_mask,
                     metadata=metadata,
                 )
             else:
-                features = pool_embedding_sequence(embedding_sequence)
+                features = masked_mean_embedding_sequence(
+                    embedding_sequence,
+                    embedding_padding_mask=embedding_padding_mask,
+                )
             return self.classifier(self.dropout(features))
 
         def _log_wandb_confusion_matrix(

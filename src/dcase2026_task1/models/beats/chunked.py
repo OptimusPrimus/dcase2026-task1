@@ -4,7 +4,7 @@ import torch
 
 from dcase2026_task1.models.audio_wrappers import (
     ArbitraryLengthAudioWrapper,
-    mean_segment_outputs,
+    pack_segment_outputs,
 )
 
 from .BEATs import BEATs
@@ -23,9 +23,8 @@ def _extract_beats_sequence_embeddings(
     )
     if feature_padding_mask is not None:
         valid = (~feature_padding_mask).unsqueeze(-1)
-        pooled = (features * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
-        return pooled.unsqueeze(1)
-    return features.mean(dim=1, keepdim=True)
+        return (features * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
+    return features.mean(dim=1)
 
 
 class ChunkedBEATs(ArbitraryLengthAudioWrapper):
@@ -41,5 +40,5 @@ class ChunkedBEATs(ArbitraryLengthAudioWrapper):
             sample_rate=sample_rate,
             max_audio_seconds=max_audio_seconds,
             segment_forward=_extract_beats_sequence_embeddings,
-            aggregate_outputs=mean_segment_outputs,
+            aggregate_outputs=pack_segment_outputs,
         )

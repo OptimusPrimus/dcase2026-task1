@@ -74,6 +74,34 @@ def mean_segment_outputs(
     return outputs / counts.view(count_shape).clamp_min(1.0)
 
 
+def pack_segment_outputs(
+    segment_outputs: torch.Tensor,
+    segment_batch_indices: torch.Tensor,
+    batch_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    counts = torch.bincount(segment_batch_indices, minlength=batch_size)
+    max_segments = int(counts.max().item()) if counts.numel() > 0 else 1
+    packed_outputs = torch.zeros(
+        (batch_size, max_segments, *segment_outputs.shape[1:]),
+        dtype=segment_outputs.dtype,
+        device=segment_outputs.device,
+    )
+    packed_padding_mask = torch.ones(
+        (batch_size, max_segments),
+        dtype=torch.bool,
+        device=segment_outputs.device,
+    )
+
+    next_positions = torch.zeros(batch_size, dtype=torch.long, device=segment_outputs.device)
+    for segment_index, batch_index in enumerate(segment_batch_indices.tolist()):
+        position = int(next_positions[batch_index].item())
+        packed_outputs[batch_index, position] = segment_outputs[segment_index]
+        packed_padding_mask[batch_index, position] = False
+        next_positions[batch_index] += 1
+
+    return packed_outputs, packed_padding_mask
+
+
 class ArbitraryLengthAudioWrapper(nn.Module):
     def __init__(
         self,

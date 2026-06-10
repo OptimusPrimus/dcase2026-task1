@@ -55,6 +55,7 @@ class BartMetadataDecoder(nn.Module):
     def forward(
         self,
         audio_embeddings: torch.Tensor,
+        audio_embedding_padding_mask: torch.Tensor | None = None,
         metadata: list[dict[str, Any]] | None = None,
     ) -> torch.Tensor:
         batch_size = audio_embeddings.shape[0]
@@ -70,11 +71,14 @@ class BartMetadataDecoder(nn.Module):
         input_ids = tokenized["input_ids"].to(model_device)
         attention_mask = tokenized["attention_mask"].to(model_device)
         projected_audio = self.audio_projection(audio_embeddings)
-        audio_attention_mask = torch.ones(
-            projected_audio.shape[:2],
-            dtype=attention_mask.dtype,
-            device=model_device,
-        )
+        if audio_embedding_padding_mask is None:
+            audio_attention_mask = torch.ones(
+                projected_audio.shape[:2],
+                dtype=attention_mask.dtype,
+                device=model_device,
+            )
+        else:
+            audio_attention_mask = (~audio_embedding_padding_mask).to(dtype=attention_mask.dtype, device=model_device)
         placeholder_token_ids = self._decoder_placeholder_token_id.expand(batch_size, -1).to(model_device)
         decoder_input_ids = torch.cat([input_ids, placeholder_token_ids], dim=1)
         decoder_attention_mask = torch.cat(
