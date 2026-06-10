@@ -27,8 +27,16 @@ warnings.filterwarnings(
 )
 
 DEFAULT_WANDB_PROJECT = "dcase2026-task1"
-DEFAULT_BSD10K_ROOT = Path.home() / "data" / "BSD10k"
-DEFAULT_BSD35K_ROOT = Path.home() / "data" / "BSD35k-CS"
+DEFAULT_BSD10K_ROOT = (
+    Path("/opt/scratch/paul/data/BSD10k")
+    if Path("/opt/scratch").exists()
+    else Path.home() / "data" / "BSD10k"
+)
+DEFAULT_BSD35K_ROOT = (
+    Path("/opt/scratch/paul/data/BSD35k-CS")
+    if Path("/opt/scratch").exists()
+    else Path.home() / "data" / "BSD35k-CS"
+)
 DEFAULT_CHECKPOINT_DIR = (
     Path("/opt/scratch/dcase2026_task1/checkpoints")
     if Path("/opt/scratch").exists()
