@@ -531,6 +531,104 @@ def compute_classification_metrics(
     return metrics
 
 
+def build_label2id(id2label: dict[int, str]) -> dict[str, int]:
+    return {label: label_id for label_id, label in id2label.items()}
+
+
+def extract_llm_label_prior(
+    metadata_item: dict[str, Any] | None,
+    label2id: dict[str, int],
+) -> tuple[set[int], np.ndarray | None]:
+    allowed_label_ids: set[int] = set()
+    prior = np.zeros(len(label2id), dtype=np.float64)
+    if metadata_item is None:
+        return allowed_label_ids, None
+
+    raw_predictions = metadata_item.get("metadata_class_probabilities")
+    if not isinstance(raw_predictions, list):
+        return allowed_label_ids, None
+
+    found_any = False
+    for item in raw_predictions:
+        if not isinstance(item, dict):
+            continue
+        label = item.get("label")
+        probability = item.get("probability")
+        if label == "other" or not isinstance(label, str):
+            continue
+        if label not in label2id:
+            continue
+        if not isinstance(probability, (int, float)):
+            continue
+        probability_value = float(probability)
+        if probability_value <= 0.0:
+            continue
+        label_id = label2id[label]
+        allowed_label_ids.add(label_id)
+        prior[label_id] = probability_value
+        found_any = True
+
+    if not found_any:
+        return set(), None
+
+    prior_sum = prior.sum()
+    if prior_sum <= 0.0:
+        return set(), None
+    return allowed_label_ids, prior / prior_sum
+
+
+def apply_hard_llm_constraints(
+    logits: Any,
+    metadata: list[dict[str, Any]] | None,
+    id2label: dict[int, str],
+) -> np.ndarray:
+    logits_np = np.asarray(logits, dtype=np.float64).copy()
+    if metadata is None:
+        return logits_np
+
+    label2id = build_label2id(id2label)
+    if len(metadata) != logits_np.shape[0]:
+        raise ValueError(
+            f"Expected metadata for {logits_np.shape[0]} samples, got {len(metadata)}."
+        )
+
+    floor_value = np.finfo(logits_np.dtype).min
+    for row_index, metadata_item in enumerate(metadata):
+        allowed_label_ids, _ = extract_llm_label_prior(metadata_item, label2id)
+        if not allowed_label_ids:
+            continue
+        constrained_row = np.full(logits_np.shape[1], floor_value, dtype=logits_np.dtype)
+        for label_id in allowed_label_ids:
+            constrained_row[label_id] = logits_np[row_index, label_id]
+        logits_np[row_index] = constrained_row
+    return logits_np
+
+
+def apply_soft_llm_constraints(
+    logits: Any,
+    metadata: list[dict[str, Any]] | None,
+    id2label: dict[int, str],
+    epsilon: float = 1e-8,
+) -> np.ndarray:
+    logits_np = np.asarray(logits, dtype=np.float64).copy()
+    if metadata is None:
+        return logits_np
+
+    label2id = build_label2id(id2label)
+    if len(metadata) != logits_np.shape[0]:
+        raise ValueError(
+            f"Expected metadata for {logits_np.shape[0]} samples, got {len(metadata)}."
+        )
+
+    for row_index, metadata_item in enumerate(metadata):
+        _, prior = extract_llm_label_prior(metadata_item, label2id)
+        if prior is None:
+            continue
+        safe_prior = np.clip(prior, epsilon, None)
+        logits_np[row_index] = logits_np[row_index] + np.log(safe_prior)
+    return logits_np
+
+
 def compute_hierarchical_metrics(
     y_true: list[str],
     y_pred: list[str],
@@ -805,6 +903,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 {
                     "logits": logits.detach().cpu().numpy(),
                     "labels": batch["labels"].detach().cpu().numpy(),
+                    "metadata": [dict(item) for item in batch["metadata"]],
                 }
             )
             return loss
@@ -814,9 +913,34 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 return
             logits = np.concatenate([item["logits"] for item in self.validation_outputs], axis=0)
             labels = np.concatenate([item["labels"] for item in self.validation_outputs], axis=0)
+            metadata = [
+                metadata_item
+                for item in self.validation_outputs
+                for metadata_item in item["metadata"]
+            ]
             predictions = logits.argmax(axis=-1)
             metrics = compute_classification_metrics(logits, labels, len(label_specs), id2label=id2label)
+            hard_constrained_logits = apply_hard_llm_constraints(logits, metadata, id2label=id2label)
+            hard_constrained_metrics = compute_classification_metrics(
+                hard_constrained_logits,
+                labels,
+                len(label_specs),
+                id2label=id2label,
+            )
+            soft_constrained_logits = apply_soft_llm_constraints(logits, metadata, id2label=id2label)
+            soft_constrained_metrics = compute_classification_metrics(
+                soft_constrained_logits,
+                labels,
+                len(label_specs),
+                id2label=id2label,
+            )
             self.log_dict({f"val/{key}": value for key, value in metrics.items()}, prog_bar=True)
+            self.log_dict(
+                {f"val_hard_constrained/{key}": value for key, value in hard_constrained_metrics.items()}
+            )
+            self.log_dict(
+                {f"val_soft_constrained/{key}": value for key, value in soft_constrained_metrics.items()}
+            )
             self._log_wandb_confusion_matrix("val", labels, predictions)
             self.validation_outputs.clear()
 
@@ -828,6 +952,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 {
                     "logits": logits.detach().cpu().numpy(),
                     "labels": batch["labels"].detach().cpu().numpy(),
+                    "metadata": [dict(item) for item in batch["metadata"]],
                 }
             )
             return loss
@@ -837,9 +962,34 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 return
             logits = np.concatenate([item["logits"] for item in self.test_outputs], axis=0)
             labels = np.concatenate([item["labels"] for item in self.test_outputs], axis=0)
+            metadata = [
+                metadata_item
+                for item in self.test_outputs
+                for metadata_item in item["metadata"]
+            ]
             predictions = logits.argmax(axis=-1)
             metrics = compute_classification_metrics(logits, labels, len(label_specs), id2label=id2label)
+            hard_constrained_logits = apply_hard_llm_constraints(logits, metadata, id2label=id2label)
+            hard_constrained_metrics = compute_classification_metrics(
+                hard_constrained_logits,
+                labels,
+                len(label_specs),
+                id2label=id2label,
+            )
+            soft_constrained_logits = apply_soft_llm_constraints(logits, metadata, id2label=id2label)
+            soft_constrained_metrics = compute_classification_metrics(
+                soft_constrained_logits,
+                labels,
+                len(label_specs),
+                id2label=id2label,
+            )
             self.log_dict({f"test/{key}": value for key, value in metrics.items()})
+            self.log_dict(
+                {f"test_hard_constrained/{key}": value for key, value in hard_constrained_metrics.items()}
+            )
+            self.log_dict(
+                {f"test_soft_constrained/{key}": value for key, value in soft_constrained_metrics.items()}
+            )
             self._log_wandb_confusion_matrix("test", labels, predictions)
             self.test_outputs.clear()
 
