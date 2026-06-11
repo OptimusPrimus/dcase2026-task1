@@ -11,6 +11,7 @@ from torch.utils.data import ConcatDataset, Dataset
 
 DEFAULT_BSD35K_ROOT = Path.home() / "data" / "BSD35k-CS"
 DEFAULT_BSD10K_ROOT = Path.home() / "data" / "BSD10k"
+DEFAULT_BSD2K_ROOT = Path.home() / "data" / "BSD2k"
 DEFAULT_BSD10K_METADATA_SUMMARIES_PATH = (
     Path(__file__).resolve().parent.parent
     / "experiments"
@@ -84,9 +85,16 @@ class BSDDataset(Dataset[dict[str, Any]]):
         self.load_audio = load_audio
 
         self._validate_layout()
-        self.class_descriptions = self._load_description_index(self.spec.description_csv)
+        self.class_descriptions = (
+            self._load_description_index(self.spec.description_csv)
+            if self._requires_class_descriptions()
+            else {}
+        )
         self.extra_metadata_by_index = self._load_extra_metadata_by_index()
         self.records = self._load_records()
+
+    def _requires_class_descriptions(self) -> bool:
+        return self.spec.name != "BSD2k"
 
     def _validate_layout(self) -> None:
         expected_paths = [
@@ -94,8 +102,9 @@ class BSDDataset(Dataset[dict[str, Any]]):
             self.spec.audio_dir,
             self.spec.metadata_dir,
             self.spec.metadata_csv,
-            self.spec.description_csv,
         ]
+        if self._requires_class_descriptions():
+            expected_paths.append(self.spec.description_csv)
         missing = [str(path) for path in expected_paths if not path.exists()]
         if missing:
             raise FileNotFoundError(
@@ -200,15 +209,13 @@ class BSDDataset(Dataset[dict[str, Any]]):
         rows = self._read_csv_rows(self.spec.metadata_csv)
         records: list[dict[str, Any]] = []
         for dataset_index, row in enumerate(rows):
-            class_idx = int(row["class_idx"])
-            sound_id = int(row["sound_id"])
-            audio_path = self.spec.audio_dir / f"{sound_id}.wav"
-            class_description = self.class_descriptions.get(class_idx)
-            if class_description is None:
-                raise KeyError(
-                    f"Missing description entry for class_idx={class_idx} "
-                    f"in {self.spec.description_csv}"
-                )
+            anonymous_id = row.get("anonymous_id")
+            sound_id_value = row.get("sound_id")
+            sound_id = int(sound_id_value) if sound_id_value not in (None, "") else None
+            class_idx_value = row.get("class_idx")
+            class_idx = int(class_idx_value) if class_idx_value not in (None, "") else None
+            audio_path = self._resolve_audio_path(sound_id=sound_id, anonymous_id=anonymous_id)
+            class_description = self._resolve_class_description(class_idx)
 
             extra_metadata = self.extra_metadata_by_index.get(dataset_index, {})
             metadata_summary = extra_metadata.get("metadata_summary")
@@ -221,16 +228,17 @@ class BSDDataset(Dataset[dict[str, Any]]):
 
             record = {
                 "dataset_index": dataset_index,
+                "anonymous_id": anonymous_id,
                 "sound_id": sound_id,
-                "class": row["class"],
+                "class": row.get("class"),
                 "class_idx": class_idx,
-                "class_top": row["class_top"],
-                "confidence": row["confidence"],
-                "uploader": row["uploader"],
-                "license": row["license"],
-                "title": row["title"],
-                "tags": row["tags"],
-                "description": row["description"],
+                "class_top": row.get("class_top"),
+                "confidence": row.get("confidence"),
+                "uploader": row.get("uploader"),
+                "license": row.get("license"),
+                "title": row.get("title"),
+                "tags": row.get("tags"),
+                "description": row.get("description"),
                 "audio_path": str(audio_path),
                 "source_dataset": self.spec.name,
                 "metadata_summary": metadata_summary,
@@ -238,30 +246,69 @@ class BSDDataset(Dataset[dict[str, Any]]):
                 "metadata_class_probabilities": metadata_class_probabilities,
                 "metadata": {
                     "dataset_index": dataset_index,
+                    "anonymous_id": anonymous_id,
                     "sound_id": sound_id,
-                    "class": row["class"],
+                    "class": row.get("class"),
                     "class_idx": class_idx,
-                    "class_top": row["class_top"],
-                    "confidence": row["confidence"],
-                    "uploader": row["uploader"],
-                    "license": row["license"],
-                    "title": row["title"],
-                    "tags": row["tags"],
-                    "description": row["description"],
+                    "class_top": row.get("class_top"),
+                    "confidence": row.get("confidence"),
+                    "uploader": row.get("uploader"),
+                    "license": row.get("license"),
+                    "title": row.get("title"),
+                    "tags": row.get("tags"),
+                    "description": row.get("description"),
                     "metadata_summary": metadata_summary,
                     "metadata_class_probabilities_raw": metadata_class_probabilities_raw,
                     "metadata_class_probabilities": metadata_class_probabilities,
                 },
                 "class_description": class_description,
-                "description_class_key": class_description["class_key"],
-                "description_class_key_long": class_description["class_key_long"],
-                "description_top_level": class_description["top_level"],
-                "description_second_level": class_description["second_level"],
-                "description_text": class_description["description"],
-                "description_examples": class_description["examples"],
+                "description_class_key": (
+                    class_description["class_key"] if class_description is not None else None
+                ),
+                "description_class_key_long": (
+                    class_description["class_key_long"] if class_description is not None else None
+                ),
+                "description_top_level": (
+                    class_description["top_level"] if class_description is not None else None
+                ),
+                "description_second_level": (
+                    class_description["second_level"] if class_description is not None else None
+                ),
+                "description_text": (
+                    class_description["description"] if class_description is not None else None
+                ),
+                "description_examples": (
+                    class_description["examples"] if class_description is not None else None
+                ),
             }
             records.append(record)
         return records
+
+    def _resolve_audio_path(self, sound_id: int | None, anonymous_id: str | None) -> Path:
+        if sound_id is not None:
+            return self.spec.audio_dir / f"{sound_id}.wav"
+        if anonymous_id in (None, ""):
+            raise KeyError(
+                f"Expected one of sound_id or anonymous_id in {self.spec.metadata_csv}"
+            )
+
+        anonymous_path = Path(anonymous_id)
+        filename = (
+            anonymous_path.name if anonymous_path.suffix else f"{anonymous_path.name}.wav"
+        )
+        return self.spec.audio_dir / filename
+
+    def _resolve_class_description(self, class_idx: int | None) -> dict[str, Any] | None:
+        if class_idx is None:
+            return None
+
+        class_description = self.class_descriptions.get(class_idx)
+        if class_description is None:
+            raise KeyError(
+                f"Missing description entry for class_idx={class_idx} "
+                f"in {self.spec.description_csv}"
+            )
+        return class_description
 
     def __len__(self) -> int:
         return len(self.records)

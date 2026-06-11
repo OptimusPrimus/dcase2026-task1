@@ -4,7 +4,6 @@ import argparse
 import json
 import math
 import random
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,14 +12,15 @@ from uuid import uuid4
 
 import numpy as np
 import torch
-from tqdm import tqdm
 
 from dcase2026_task1.data.splits import (
     DEFAULT_BSD_SPLIT_SEED,
     get_experiment_records,
 )
-from dcase2026_task1.models.bart_decoder import BartMetadataDecoder
-from dcase2026_task1.models.beats import BEATs, BEATsConfig, ChunkedBEATs
+from dcase2026_task1.models.beats import (
+    build_beats_embedding_model,
+    resolve_checkpoint_path,
+)
 
 import warnings
 warnings.filterwarnings(
@@ -39,6 +39,11 @@ DEFAULT_BSD35K_ROOT = (
     if Path("/opt/scratch").exists()
     else Path.home() / "data" / "BSD35k-CS"
 )
+DEFAULT_BSD2K_ROOT = (
+    Path("/opt/scratch/paul/data/BSD2k")
+    if Path("/opt/scratch").exists()
+    else Path.home() / "data" / "BSD2k"
+)
 DEFAULT_CHECKPOINT_DIR = (
     Path("/opt/scratch/paul/dcase2026_task1/checkpoints")
     if Path("/opt/scratch").exists()
@@ -53,8 +58,6 @@ DEFAULT_OUTPUT_ROOT = (
 
 DEFAULT_CHECKPOINT_ALIAS = "beats_iter3plus_as2m"
 DEFAULT_EMBEDDING_MODEL = "beats"
-DEFAULT_DECODER_MODEL = "none"
-DEFAULT_BART_MODEL_ID = "facebook/bart-base"
 MAX_RANDOM_SEED = (2**32) - 1
 
 
@@ -74,18 +77,6 @@ class AudioEmbeddingModel(Protocol):
         padding_mask: Any,
         metadata: list[dict[str, Any]] | None = None,
     ) -> tuple[Any, Any]:
-        ...
-
-
-class MetadataDecoderModel(Protocol):
-    output_dim: int
-
-    def __call__(
-        self,
-        audio_embeddings: Any,
-        audio_embedding_padding_mask: Any = None,
-        metadata: list[dict[str, Any]] | None = None,
-    ) -> Any:
         ...
 
 
@@ -124,12 +115,42 @@ class WaveformClassificationDataset:
         }
 
 
+class WaveformInferenceDataset:
+    def __init__(
+        self,
+        records: list[dict[str, Any]],
+        target_sample_rate: int,
+    ) -> None:
+        self.records = records
+        self.target_sample_rate = target_sample_rate
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        from dcase2026_task1.data.datasets import load_audio_waveform
+
+        record = self.records[index]
+        waveform, sample_rate = load_audio_waveform(record["audio_path"])
+        waveform = waveform.mean(axis=0)
+
+        if sample_rate != self.target_sample_rate:
+            waveform = _resample_audio(waveform, sample_rate, self.target_sample_rate)
+
+        return {
+            "waveform": waveform.astype(np.float32, copy=False),
+            "file_id": resolve_record_file_id(record),
+            "metadata": dict(record["metadata"]),
+        }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train an audio classifier on BSD datasets with PyTorch Lightning."
     )
     parser.add_argument("--bsd10k-root", default=None)
     parser.add_argument("--bsd35k-root", default=None)
+    parser.add_argument("--bsd2k-root", default=None)
     parser.add_argument(
         "--include-bsd35k-cs",
         action=argparse.BooleanOptionalAction,
@@ -140,16 +161,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--embedding-model",
         default=DEFAULT_EMBEDDING_MODEL,
         help="Audio embedding backbone used by the training script.",
-    )
-    parser.add_argument(
-        "--decoder-model",
-        default=DEFAULT_DECODER_MODEL,
-        help="Optional metadata decoder applied after the audio encoder.",
-    )
-    parser.add_argument(
-        "--decoder-pretrained-model-name",
-        default=DEFAULT_BART_MODEL_ID,
-        help="Hugging Face model id used when --decoder-model=bart.",
     )
     parser.add_argument(
         "--checkpoint-dir",
@@ -237,10 +248,12 @@ def build_parser() -> argparse.ArgumentParser:
 def resolve_dataset_roots(
     bsd10k_root: str | None,
     bsd35k_root: str | None,
+    bsd2k_root: str | None,
 ) -> dict[str, Path]:
     return {
         "BSD10k": Path(bsd10k_root) if bsd10k_root is not None else DEFAULT_BSD10K_ROOT,
         "BSD35k-CS": Path(bsd35k_root) if bsd35k_root is not None else DEFAULT_BSD35K_ROOT,
+        "BSD2k": Path(bsd2k_root) if bsd2k_root is not None else DEFAULT_BSD2K_ROOT,
     }
 
 
@@ -336,114 +349,18 @@ def resolve_seed(seed: int | None) -> int:
     return random.SystemRandom().randint(0, MAX_RANDOM_SEED)
 
 
-def resolve_checkpoint_path(
-    checkpoint_dir: str | Path,
-    checkpoint_alias: str
-) -> Path:
-
-    resolved_checkpoint_dir = Path(checkpoint_dir).expanduser().resolve()
-    destination = resolved_checkpoint_dir / f"{checkpoint_alias}.pt"
-    if not destination.exists():
-        raise FileNotFoundError(f"Checkpoint not found at {destination}.")
-
-    return destination
-
-
-def validate_checkpoint_file(path: Path) -> None:
-    header = path.read_bytes()[:512]
-    lowered = header.lower().lstrip()
-    if (
-        lowered.startswith(b"<!doctype html")
-        or lowered.startswith(b"<html")
-        or lowered.startswith(b"<?xml")
-    ):
-        raise ValueError(
-            f"{path} does not look like a PyTorch checkpoint. It looks like an HTML/XML response instead, "
-            "which usually means the OneDrive share page was downloaded instead of the checkpoint file. "
-            f"Delete {path} and re-run with a real checkpoint file via --checkpoint-path, or provide a direct "
-            "download URL via --checkpoint-url."
-        )
-    if b"<title>" in lowered[:256] or b"onedrive" in lowered[:256]:
-        raise ValueError(
-            f"{path} appears to contain a web page instead of checkpoint bytes. "
-            f"Delete {path} and re-run with --checkpoint-path pointing at a valid .pt file."
-        )
-
-
-def load_embedding_checkpoint(args: argparse.Namespace, torch_module: Any) -> dict[str, Any]:
-    checkpoint_path = resolve_checkpoint_path(
-        checkpoint_dir=args.checkpoint_dir,
-        checkpoint_alias=args.checkpoint_alias,
-    )
-    validate_checkpoint_file(checkpoint_path)
-    if not args.trust_checkpoint:
-        raise ValueError(
-            "Original BEATs checkpoints require torch.load(..., weights_only=False). "
-            "Re-run with --trust-checkpoint only if the checkpoint source is trusted."
-        )
-    checkpoint = torch_module.load(
-        str(checkpoint_path),
-        map_location="cpu",
-        weights_only=False,
-    )
-    return {
-        "path": checkpoint_path,
-        "checkpoint": checkpoint,
-    }
-
-
-def build_beats_embedding_model(
-    checkpoint: dict[str, Any],
-    sample_rate: int,
-) -> AudioEmbeddingModel:
-    config = BEATsConfig(checkpoint["cfg"])
-    config.finetuned_model = False
-    beats_model = BEATs(config)
-    state_dict = {
-        key: value
-        for key, value in checkpoint["model"].items()
-        if not key.startswith("predictor.")
-    }
-    missing_keys, unexpected_keys = beats_model.load_state_dict(state_dict, strict=False)
-    if unexpected_keys:
-        raise RuntimeError(f"Unexpected BEATs checkpoint keys: {unexpected_keys}")
-    non_predictor_missing = [
-        key for key in missing_keys if not key.startswith("predictor")
-    ]
-    if non_predictor_missing:
-        raise RuntimeError(f"Missing BEATs checkpoint keys: {non_predictor_missing}")
-
-    model = ChunkedBEATs(
-        beats_model,
-        sample_rate=sample_rate,
-        max_audio_seconds=10,
-    )
-    model.output_dim = int(config.encoder_embed_dim)
-    return model
-
-
 def build_embedding_model(
     args: argparse.Namespace,
-    checkpoint: dict[str, Any],
     sample_rate: int,
 ) -> AudioEmbeddingModel:
     if args.embedding_model == "beats":
-        return build_beats_embedding_model(checkpoint, sample_rate=sample_rate)
-    raise ValueError(f"Unsupported embedding model: {args.embedding_model!r}")
-
-
-def build_metadata_decoder(
-    args: argparse.Namespace,
-    audio_embedding_dim: int,
-) -> MetadataDecoderModel | None:
-    if args.decoder_model == "none":
-        return None
-    if args.decoder_model == "bart":
-        return BartMetadataDecoder(
-            audio_embedding_dim=audio_embedding_dim,
-            model_id=args.decoder_pretrained_model_name,
+        return build_beats_embedding_model(
+            checkpoint_dir=args.checkpoint_dir,
+            checkpoint_alias=args.checkpoint_alias,
+            trust_checkpoint=args.trust_checkpoint,
+            sample_rate=sample_rate,
         )
-    raise ValueError(f"Unsupported decoder model: {args.decoder_model!r}")
+    raise ValueError(f"Unsupported embedding model: {args.embedding_model!r}")
 
 
 def pool_embedding_sequence(embedding_sequence: Any) -> Any:
@@ -499,6 +416,100 @@ def collate_waveforms(features: list[dict[str, Any]]) -> dict[str, Any]:
         "labels": labels,
         "metadata": [dict(feature["metadata"]) for feature in features],
     }
+
+
+def collate_inference_waveforms(features: list[dict[str, Any]]) -> dict[str, Any]:
+    lengths = [len(feature["waveform"]) for feature in features]
+    max_length = max(lengths)
+    batch_size = len(features)
+
+    waveforms = torch.zeros((batch_size, max_length), dtype=torch.float32)
+    padding_mask = torch.ones((batch_size, max_length), dtype=torch.bool)
+
+    for index, feature in enumerate(features):
+        waveform = torch.from_numpy(feature["waveform"])
+        length = waveform.shape[0]
+        waveforms[index, :length] = waveform
+        padding_mask[index, :length] = False
+
+    return {
+        "waveforms": waveforms,
+        "padding_mask": padding_mask,
+        "file_ids": [str(feature["file_id"]) for feature in features],
+        "metadata": [dict(feature["metadata"]) for feature in features],
+    }
+
+
+def resolve_record_file_id(record: dict[str, Any]) -> str:
+    anonymous_id = record.get("anonymous_id")
+    if anonymous_id not in (None, ""):
+        return str(anonymous_id)
+    sound_id = record.get("sound_id")
+    if sound_id not in (None, ""):
+        return str(sound_id)
+    audio_path = record.get("audio_path")
+    if audio_path not in (None, ""):
+        return Path(str(audio_path)).stem
+    raise KeyError(f"Could not resolve file_id for record: {record!r}")
+
+
+def load_full_dataset_records(dataset_name: str, root: Path) -> list[dict[str, Any]]:
+    from dcase2026_task1.data.datasets import BSDDataset
+
+    dataset = BSDDataset(root=root, dataset_name=dataset_name, load_audio=False)
+    return list(dataset.records)
+
+
+def predict_logits_for_records(
+    model: torch.nn.Module,
+    records: list[dict[str, Any]],
+    *,
+    batch_size: int,
+    num_workers: int,
+    sample_rate: int,
+    device: torch.device,
+) -> tuple[list[str], np.ndarray]:
+    dataset = WaveformInferenceDataset(records=records, target_sample_rate=sample_rate)
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=collate_inference_waveforms,
+        pin_memory=(device.type == "cuda"),
+    )
+
+    all_file_ids: list[str] = []
+    all_logits: list[np.ndarray] = []
+    model.eval()
+    with torch.inference_mode():
+        for batch in dataloader:
+            waveforms = batch["waveforms"].to(device)
+            padding_mask = batch["padding_mask"].to(device)
+            logits = model(waveforms, padding_mask, metadata=batch["metadata"])
+            all_file_ids.extend(batch["file_ids"])
+            all_logits.append(logits.detach().cpu().numpy())
+
+    if not all_logits:
+        return all_file_ids, np.zeros((0, 0), dtype=np.float32)
+    return all_file_ids, np.concatenate(all_logits, axis=0)
+
+
+def write_logits_npz(
+    path: Path,
+    file_ids: list[str],
+    logits: np.ndarray,
+    label_specs: list[LabelSpec],
+) -> None:
+    payload: dict[str, np.ndarray] = {
+        file_id: np.asarray(row, dtype=np.float32)
+        for file_id, row in zip(file_ids, logits, strict=True)
+    }
+    payload["label_names"] = np.asarray(
+        [spec.class_name for spec in label_specs],
+        dtype=np.str_,
+    )
+    np.savez(path, **payload)
 
 
 def compute_classification_metrics(
@@ -585,58 +596,6 @@ def extract_llm_label_prior(
     if prior_sum <= 0.0:
         return set(), None
     return allowed_label_ids, prior / prior_sum
-
-
-def apply_hard_llm_constraints(
-    logits: Any,
-    metadata: list[dict[str, Any]] | None,
-    id2label: dict[int, str],
-) -> np.ndarray:
-    logits_np = np.asarray(logits, dtype=np.float64).copy()
-    if metadata is None:
-        return logits_np
-
-    label2id = build_label2id(id2label)
-    if len(metadata) != logits_np.shape[0]:
-        raise ValueError(
-            f"Expected metadata for {logits_np.shape[0]} samples, got {len(metadata)}."
-        )
-
-    floor_value = np.finfo(logits_np.dtype).min
-    for row_index, metadata_item in enumerate(metadata):
-        allowed_label_ids, _ = extract_llm_label_prior(metadata_item, label2id)
-        if not allowed_label_ids:
-            continue
-        constrained_row = np.full(logits_np.shape[1], floor_value, dtype=logits_np.dtype)
-        for label_id in allowed_label_ids:
-            constrained_row[label_id] = logits_np[row_index, label_id]
-        logits_np[row_index] = constrained_row
-    return logits_np
-
-
-def apply_soft_llm_constraints(
-    logits: Any,
-    metadata: list[dict[str, Any]] | None,
-    id2label: dict[int, str],
-    epsilon: float = 1e-8,
-) -> np.ndarray:
-    logits_np = np.asarray(logits, dtype=np.float64).copy()
-    if metadata is None:
-        return logits_np
-
-    label2id = build_label2id(id2label)
-    if len(metadata) != logits_np.shape[0]:
-        raise ValueError(
-            f"Expected metadata for {logits_np.shape[0]} samples, got {len(metadata)}."
-        )
-
-    for row_index, metadata_item in enumerate(metadata):
-        _, prior = extract_llm_label_prior(metadata_item, label2id)
-        if prior is None:
-            continue
-        safe_prior = np.clip(prior, epsilon, None)
-        logits_np[row_index] = logits_np[row_index] + np.log(safe_prior)
-    return logits_np
 
 
 def build_llm_prior_weights(
@@ -760,7 +719,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
     pl, ModelCheckpoint, LearningRateMonitor, WandbLogger = _get_lightning_runtime()
     progress_bar = _get_progress_bar_callback(pl)
 
-    dataset_roots = resolve_dataset_roots(args.bsd10k_root, args.bsd35k_root)
+    dataset_roots = resolve_dataset_roots(args.bsd10k_root, args.bsd35k_root, args.bsd2k_root)
     train_records, val_records, test_records = get_experiment_records(
         bsd10k_root=dataset_roots["BSD10k"],
         bsd35k_root=dataset_roots["BSD35k-CS"],
@@ -780,9 +739,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
         args.embedding_model,
     )
 
-    checkpoint_info = load_embedding_checkpoint(args, torch)
-    checkpoint_path = checkpoint_info["path"]
-    checkpoint = checkpoint_info["checkpoint"]
     sample_rate = 16000
 
     train_indices = maybe_limit(list(range(len(train_records))), args.max_train_items)
@@ -835,8 +791,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
             self.save_hyperparameters(
                 {
                     "embedding_model": args.embedding_model,
-                    "decoder_model": args.decoder_model,
-                    "decoder_pretrained_model_name": args.decoder_pretrained_model_name,
                     "learning_rate": args.learning_rate,
                     "min_learning_rate": args.min_learning_rate,
                     "weight_decay": args.weight_decay,
@@ -848,20 +802,15 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     "total_update_steps": total_update_steps,
                     "num_labels": len(label_specs),
                     "freeze_encoder": args.freeze_encoder,
-                    "checkpoint_path": str(checkpoint_path),
                     "use_llm_prior_embedding_fusion": args.use_llm_prior_embedding_fusion,
                 }
             )
 
             self.embedding_model = build_embedding_model(
                 args,
-                checkpoint=checkpoint,
                 sample_rate=sample_rate,
             )
-            self.metadata_decoder = build_metadata_decoder(
-                args,
-                audio_embedding_dim=self.embedding_model.output_dim,
-            )
+            self.embedding_checkpoint_cfg = getattr(self.embedding_model, "checkpoint_cfg", None)
 
             if args.freeze_encoder:
                 for parameter in self.embedding_model.parameters():
@@ -882,11 +831,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     args.head_dropout,
                 )
             else:
-                classifier_input_dim = (
-                    self.metadata_decoder.output_dim
-                    if self.metadata_decoder is not None
-                    else self.embedding_model.output_dim
-                )
+                classifier_input_dim = self.embedding_model.output_dim
                 self.llm_class_embedding_bank = None
                 self.fusion_head = None
             self.classifier = torch.nn.Linear(classifier_input_dim, len(label_specs))
@@ -919,12 +864,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 llm_features = llm_prior_weights @ self.llm_class_embedding_bank.weight
                 fused_features = torch.cat([audio_features, llm_features], dim=-1)
                 features = self.fusion_head(self.dropout(fused_features))
-            elif self.metadata_decoder is not None:
-                features = self.metadata_decoder(
-                    embedding_sequence,
-                    audio_embedding_padding_mask=embedding_padding_mask,
-                    metadata=metadata,
-                )
             else:
                 features = audio_features
             return self.classifier(self.dropout(features))
@@ -973,8 +912,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             self.validation_outputs.append(
                 {
                     "logits": logits.detach().cpu().numpy(),
-                    "labels": batch["labels"].detach().cpu().numpy(),
-                    "metadata": [dict(item) for item in batch["metadata"]],
+                    "labels": batch["labels"].detach().cpu().numpy()
                 }
             )
             return loss
@@ -991,27 +929,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             ]
             predictions = logits.argmax(axis=-1)
             metrics = compute_classification_metrics(logits, labels, len(label_specs), id2label=id2label)
-            hard_constrained_logits = apply_hard_llm_constraints(logits, metadata, id2label=id2label)
-            hard_constrained_metrics = compute_classification_metrics(
-                hard_constrained_logits,
-                labels,
-                len(label_specs),
-                id2label=id2label,
-            )
-            soft_constrained_logits = apply_soft_llm_constraints(logits, metadata, id2label=id2label)
-            soft_constrained_metrics = compute_classification_metrics(
-                soft_constrained_logits,
-                labels,
-                len(label_specs),
-                id2label=id2label,
-            )
             self.log_dict({f"val/{key}": value for key, value in metrics.items()}, prog_bar=True)
-            self.log_dict(
-                {f"val_hard_constrained/{key}": value for key, value in hard_constrained_metrics.items()}
-            )
-            self.log_dict(
-                {f"val_soft_constrained/{key}": value for key, value in soft_constrained_metrics.items()}
-            )
             self._log_wandb_confusion_matrix("val", labels, predictions)
             self.validation_outputs.clear()
 
@@ -1022,8 +940,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             self.test_outputs.append(
                 {
                     "logits": logits.detach().cpu().numpy(),
-                    "labels": batch["labels"].detach().cpu().numpy(),
-                    "metadata": [dict(item) for item in batch["metadata"]],
+                    "labels": batch["labels"].detach().cpu().numpy()
                 }
             )
             return loss
@@ -1040,27 +957,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             ]
             predictions = logits.argmax(axis=-1)
             metrics = compute_classification_metrics(logits, labels, len(label_specs), id2label=id2label)
-            hard_constrained_logits = apply_hard_llm_constraints(logits, metadata, id2label=id2label)
-            hard_constrained_metrics = compute_classification_metrics(
-                hard_constrained_logits,
-                labels,
-                len(label_specs),
-                id2label=id2label,
-            )
-            soft_constrained_logits = apply_soft_llm_constraints(logits, metadata, id2label=id2label)
-            soft_constrained_metrics = compute_classification_metrics(
-                soft_constrained_logits,
-                labels,
-                len(label_specs),
-                id2label=id2label,
-            )
             self.log_dict({f"test/{key}": value for key, value in metrics.items()})
-            self.log_dict(
-                {f"test_hard_constrained/{key}": value for key, value in hard_constrained_metrics.items()}
-            )
-            self.log_dict(
-                {f"test_soft_constrained/{key}": value for key, value in soft_constrained_metrics.items()}
-            )
             self._log_wandb_confusion_matrix("test", labels, predictions)
             self.test_outputs.clear()
 
@@ -1096,14 +993,17 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 },
             }
 
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    lightning_module = ClassificationLightningModule()
+
     experiment_config = {
         "dataset": "BSD10k",
         "include_bsd35k_cs": args.include_bsd35k_cs,
         "dataset_roots": {name: str(path) for name, path in dataset_roots.items()},
         "embedding_model": args.embedding_model,
-        "decoder_model": args.decoder_model,
-        "decoder_pretrained_model_name": args.decoder_pretrained_model_name,
-        "checkpoint_path": str(checkpoint_path),
         "checkpoint_dir": str(Path(args.checkpoint_dir).expanduser().resolve()),
         "checkpoint_alias": args.checkpoint_alias,
         "trust_checkpoint": args.trust_checkpoint,
@@ -1128,6 +1028,12 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "train_size": len(train_indices),
             "val_size": len(val_indices),
             "test_size": len(test_indices),
+        },
+        "prediction_datasets": {
+            "hidden_test_dataset": "BSD2k",
+            "hidden_test_root": str(dataset_roots["BSD2k"]),
+            "bsd10k_root": str(dataset_roots["BSD10k"]),
+            "bsd35k_root": str(dataset_roots["BSD35k-CS"]),
         },
         "training": {
             "batch_size": args.batch_size,
@@ -1159,7 +1065,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "mode": args.wandb_mode,
             "run_name": experiment_dir.name,
         },
-        "embedding_checkpoint_cfg": checkpoint["cfg"],
+        "embedding_checkpoint_cfg": lightning_module.embedding_checkpoint_cfg,
     }
     write_json(experiment_dir / "config.json", experiment_config)
 
@@ -1198,27 +1104,53 @@ def run_experiment(args: argparse.Namespace) -> Path:
         log_every_n_steps=10,
     )
 
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-
     datamodule = BSDDataModule()
-    lightning_module = ClassificationLightningModule()
     trainer.fit(lightning_module, datamodule=datamodule)
+    best_model_path = model_checkpoint.best_model_path or None
     test_results = trainer.test(
         model=lightning_module,
         datamodule=datamodule,
-        ckpt_path=None,
+        ckpt_path=best_model_path,
     )
 
+    best_checkpoint_path = Path(best_model_path) if best_model_path else None
+    export_paths: dict[str, str] = {}
+    if best_checkpoint_path is not None and best_checkpoint_path.exists():
+        best_checkpoint = torch.load(str(best_checkpoint_path), map_location="cpu", weights_only=False)
+        best_model = ClassificationLightningModule()
+        best_model.load_state_dict(best_checkpoint["state_dict"])
+        inference_device = getattr(getattr(trainer, "strategy", None), "root_device", torch.device("cpu"))
+        if not isinstance(inference_device, torch.device):
+            inference_device = torch.device(str(inference_device))
+        best_model.to(inference_device)
+
+        prediction_specs = [
+            ("bsd2k_hidden_test_logits.npz", load_full_dataset_records("BSD2k", dataset_roots["BSD2k"])),
+            ("bsd10k_logits.npz", load_full_dataset_records("BSD10k", dataset_roots["BSD10k"])),
+            ("bsd35k_cs_logits.npz", load_full_dataset_records("BSD35k-CS", dataset_roots["BSD35k-CS"])),
+        ]
+        for filename, records in prediction_specs:
+            file_ids, logits = predict_logits_for_records(
+                best_model,
+                records,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                sample_rate=sample_rate,
+                device=inference_device,
+            )
+            npz_path = experiment_dir / filename
+            write_logits_npz(npz_path, file_ids, logits, label_specs)
+            export_paths[filename] = str(npz_path)
+
     summary = {
-        "best_model_path": model_checkpoint.best_model_path,
+        "best_model_path": best_model_path,
         "best_model_score": (
             float(model_checkpoint.best_model_score.item())
             if model_checkpoint.best_model_score is not None
             else None
         ),
         "test_results": test_results,
+        "prediction_exports": export_paths,
     }
     write_json(experiment_dir / "summary.json", summary)
 

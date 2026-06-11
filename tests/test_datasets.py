@@ -10,6 +10,7 @@ from dcase2026_task1.data.datasets import BSDDataset
 
 DEFAULT_BSD35K_ROOT = str(Path.home() / "data" / "BSD35k-CS")
 DEFAULT_BSD10K_ROOT = str(Path.home() / "data" / "BSD10k")
+DEFAULT_BSD2K_ROOT = str(Path.home() / "data" / "BSD2k")
 
 
 def _example_view(item: dict) -> dict:
@@ -82,6 +83,24 @@ def _write_dataset_fixture(root: Path, dataset_name: str) -> None:
                 "class_idx,class_key,class_key_long,top_level,second_level,description,examples",
                 "401,fx-o,Sound effects / Objects and household appliances,fx,objects,Object sounds,door close",
                 "203,is-w,Instrument sample / Wind,is,wind,Wind instrument sample,flute note",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_bsd2k_fixture(root: Path) -> None:
+    (root / "audio").mkdir(parents=True)
+    metadata_dir = root / "metadata"
+    metadata_dir.mkdir(parents=True)
+
+    (metadata_dir / "BSD2k_metadata.csv").write_text(
+        "\n".join(
+            [
+                "anonymous_id,title,tags,description",
+                "anon-001,clip one,tag-a,desc one",
+                "anon-002.wav,clip two,tag-b,desc two",
             ]
         )
         + "\n",
@@ -168,3 +187,25 @@ def test_non_bsd10k_dataset_keeps_extra_metadata_empty(tmp_path: Path) -> None:
     assert item["metadata_summary"] is None
     assert item["metadata_class_probabilities_raw"] is None
     assert item["metadata_class_probabilities"] is None
+
+
+def test_bsd2k_dataset_loads_reduced_metadata_schema(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "BSD2k"
+    _write_bsd2k_fixture(dataset_root)
+
+    dataset = BSDDataset(root=dataset_root, dataset_name="BSD2k", load_audio=False)
+
+    item0 = dataset[0]
+    assert item0["source_dataset"] == "BSD2k"
+    assert item0["anonymous_id"] == "anon-001"
+    assert item0["sound_id"] is None
+    assert item0["class"] is None
+    assert item0["class_idx"] is None
+    assert item0["uploader"] is None
+    assert item0["audio_path"].endswith("/audio/anon-001.wav")
+    assert item0["class_description"] is None
+    assert item0["description_class_key"] is None
+    assert item0["metadata"]["anonymous_id"] == "anon-001"
+
+    item1 = dataset[1]
+    assert item1["audio_path"].endswith("/audio/anon-002.wav")
