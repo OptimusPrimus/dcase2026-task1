@@ -30,4 +30,5 @@ command:
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
   - --use-llm-prior-embedding-fusion
+  - --embedding-model=passt
   - ${args}
