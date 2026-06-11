@@ -11,9 +11,9 @@ from dcase2026_task1.models.audio_wrappers import (
     pack_segment_outputs,
 )
 
-from .passt import checkpoint_filter_fn, passt_s_swa_p16_128_ap476, passt_s_kd_p16_128_ap486
+from .passt import checkpoint_filter_fn, passt_s_swa_p16_128_ap476, passt_s_kd_p16_128_ap486, passt_s_swa_p16_s16_128_ap473
 
-DEFAULT_CHECKPOINT_ALIAS = "passt_s_kd_p16_128_ap486"
+DEFAULT_CHECKPOINT_ALIAS = "passt_s_swa_p16_s16_128_ap473"
 DEFAULT_SAMPLE_RATE = 32000
 DEFAULT_NUM_CLASSES = 527
 DEFAULT_NUM_MEL_BINS = 128
@@ -185,12 +185,12 @@ def build_passt_embedding_model(
 #        checkpoint_alias=checkpoint_alias,
 #        trust_checkpoint=trust_checkpoint,
 #    )
-    passt_model = passt_s_kd_p16_128_ap486(
+    passt_model = passt_s_swa_p16_s16_128_ap473(
         pretrained=True,
         num_classes=DEFAULT_NUM_CLASSES,
         in_chans=1,
         img_size=(DEFAULT_NUM_MEL_BINS, DEFAULT_INPUT_TDIM),
-        stride=(10, 10),
+        stride=(16, 16),
         u_patchout=0,
         s_patchout_t=10,
         s_patchout_f=4,
@@ -234,6 +234,7 @@ __all__ = [
     "load_embedding_checkpoint",
     "passt_s_swa_p16_128_ap476",
     "passt_s_kd_p16_128_ap486",
+    "passt_s_swa_p16_s16_128_ap473",
     "resolve_checkpoint_path",
     "validate_checkpoint_file",
 ]
