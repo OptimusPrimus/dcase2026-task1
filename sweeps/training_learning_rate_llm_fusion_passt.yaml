@@ -8,7 +8,7 @@ metric:
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: !!float 1e-5
+    min: !!float 5e-6
     max: !!float 5e-5
   weight_decay:
     value: 0.0
