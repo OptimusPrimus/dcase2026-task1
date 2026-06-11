@@ -12,6 +12,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 import numpy as np
+import torch
 from tqdm import tqdm
 
 from dcase2026_task1.data.splits import (
@@ -187,6 +188,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", "--learning_rate", type=float, default=3e-5)
     parser.add_argument("--weight-decay", "--weight_decay", type=float, default=0.01)
     parser.add_argument("--head-dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--use-llm-prior-embedding-fusion",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Fuse pooled audio embeddings with a learnable class-embedding mixture built "
+            "from metadata_class_probabilities."
+        ),
+    )
     parser.add_argument("--max-epochs", "--max_epochs", type=int, default=10)
     parser.add_argument(
         "--warmup-epochs",
@@ -629,6 +639,41 @@ def apply_soft_llm_constraints(
     return logits_np
 
 
+def build_llm_prior_weights(
+    metadata: list[dict[str, Any]] | None,
+    id2label: dict[int, str],
+    *,
+    device: torch.device | None = None,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    label2id = build_label2id(id2label)
+    num_labels = len(id2label)
+    if metadata is None:
+        return torch.zeros((0, num_labels), device=device, dtype=dtype or torch.float32)
+
+    weights = torch.zeros((len(metadata), num_labels), device=device, dtype=dtype or torch.float32)
+    for row_index, metadata_item in enumerate(metadata):
+        _, prior = extract_llm_label_prior(metadata_item, label2id)
+        if prior is None:
+            continue
+        weights[row_index] = torch.as_tensor(prior, device=device, dtype=weights.dtype)
+    return weights
+
+
+def build_prediction_head(
+    input_dim: int,
+    output_dim: int,
+    dropout: float,
+) -> torch.nn.Sequential:
+    hidden_dim = max(input_dim, output_dim)
+    return torch.nn.Sequential(
+        torch.nn.Linear(input_dim, hidden_dim),
+        torch.nn.GELU(),
+        torch.nn.Dropout(dropout),
+        torch.nn.Linear(hidden_dim, output_dim),
+    )
+
+
 def compute_hierarchical_metrics(
     y_true: list[str],
     y_pred: list[str],
@@ -709,8 +754,6 @@ def _get_progress_bar_callback(pl: Any) -> Any:
 
 
 def run_experiment(args: argparse.Namespace) -> Path:
-    import torch
-
     seed = resolve_seed(args.seed)
     args.seed = seed
 
@@ -806,6 +849,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     "num_labels": len(label_specs),
                     "freeze_encoder": args.freeze_encoder,
                     "checkpoint_path": str(checkpoint_path),
+                    "use_llm_prior_embedding_fusion": args.use_llm_prior_embedding_fusion,
                 }
             )
 
@@ -824,11 +868,27 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     parameter.requires_grad = False
 
             self.dropout = torch.nn.Dropout(args.head_dropout)
-            classifier_input_dim = (
-                self.metadata_decoder.output_dim
-                if self.metadata_decoder is not None
-                else self.embedding_model.output_dim
-            )
+            self.use_llm_prior_embedding_fusion = args.use_llm_prior_embedding_fusion
+            if self.use_llm_prior_embedding_fusion:
+                fusion_input_dim = self.embedding_model.output_dim * 2
+                classifier_input_dim = self.embedding_model.output_dim
+                self.llm_class_embedding_bank = torch.nn.Embedding(
+                    len(label_specs),
+                    self.embedding_model.output_dim,
+                )
+                self.fusion_head = build_prediction_head(
+                    fusion_input_dim,
+                    classifier_input_dim,
+                    args.head_dropout,
+                )
+            else:
+                classifier_input_dim = (
+                    self.metadata_decoder.output_dim
+                    if self.metadata_decoder is not None
+                    else self.embedding_model.output_dim
+                )
+                self.llm_class_embedding_bank = None
+                self.fusion_head = None
             self.classifier = torch.nn.Linear(classifier_input_dim, len(label_specs))
             self.loss_fn = torch.nn.CrossEntropyLoss()
             self.validation_outputs: list[dict[str, Any]] = []
@@ -845,17 +905,28 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 padding_mask,
                 metadata=metadata,
             )
-            if self.metadata_decoder is not None:
+            audio_features = masked_mean_embedding_sequence(
+                embedding_sequence,
+                embedding_padding_mask=embedding_padding_mask,
+            )
+            if self.use_llm_prior_embedding_fusion:
+                llm_prior_weights = build_llm_prior_weights(
+                    metadata,
+                    id2label=id2label,
+                    device=audio_features.device,
+                    dtype=audio_features.dtype,
+                )
+                llm_features = llm_prior_weights @ self.llm_class_embedding_bank.weight
+                fused_features = torch.cat([audio_features, llm_features], dim=-1)
+                features = self.fusion_head(self.dropout(fused_features))
+            elif self.metadata_decoder is not None:
                 features = self.metadata_decoder(
                     embedding_sequence,
                     audio_embedding_padding_mask=embedding_padding_mask,
                     metadata=metadata,
                 )
             else:
-                features = masked_mean_embedding_sequence(
-                    embedding_sequence,
-                    embedding_padding_mask=embedding_padding_mask,
-                )
+                features = audio_features
             return self.classifier(self.dropout(features))
 
         def _log_wandb_confusion_matrix(
