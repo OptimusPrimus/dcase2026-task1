@@ -17,10 +17,8 @@ from dcase2026_task1.data.splits import (
     DEFAULT_BSD_SPLIT_SEED,
     get_experiment_records,
 )
-from dcase2026_task1.models.beats import (
-    build_beats_embedding_model,
-    resolve_checkpoint_path,
-)
+from dcase2026_task1.models.beats import build_beats_embedding_model
+from dcase2026_task1.models.passt import build_passt_embedding_model
 
 import warnings
 warnings.filterwarnings(
@@ -56,8 +54,11 @@ DEFAULT_OUTPUT_ROOT = (
     else Path("outputs/training")
 )
 
-DEFAULT_CHECKPOINT_ALIAS = "beats_iter3plus_as2m"
 DEFAULT_EMBEDDING_MODEL = "beats"
+EMBEDDING_SAMPLE_RATES = {
+    "beats": 16000,
+    "passt": 32000,
+}
 MAX_RANDOM_SEED = (2**32) - 1
 
 
@@ -168,9 +169,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory used for embedding-model checkpoints.",
     )
     parser.add_argument(
-        "--checkpoint-alias",
-        default=DEFAULT_CHECKPOINT_ALIAS,
-        help="Checkpoint alias to load for the selected embedding model.",
+        "--init-checkpoint-path",
+        default=None,
+        help=(
+            "Optional training checkpoint used to initialize model weights before "
+            "starting a new training run."
+        ),
     )
 
     parser.add_argument(
@@ -178,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "Allow torch.load(..., weights_only=False) for original BEATs checkpoints. "
+            "Allow torch.load(..., weights_only=False) for original embedding checkpoints. "
             "Disable with --no-trust-checkpoint for untrusted files."
         ),
     )
@@ -209,6 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--max-epochs", "--max_epochs", type=int, default=10)
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=10,
+        help="Early stopping patience in validation epochs for val/hierarchical_f1.",
+    )
     parser.add_argument(
         "--warmup-epochs",
         "--warmup_epochs",
@@ -356,11 +366,41 @@ def build_embedding_model(
     if args.embedding_model == "beats":
         return build_beats_embedding_model(
             checkpoint_dir=args.checkpoint_dir,
-            checkpoint_alias=args.checkpoint_alias,
+            trust_checkpoint=args.trust_checkpoint,
+            sample_rate=sample_rate,
+        )
+    if args.embedding_model == "passt":
+        return build_passt_embedding_model(
+            checkpoint_dir=args.checkpoint_dir,
             trust_checkpoint=args.trust_checkpoint,
             sample_rate=sample_rate,
         )
     raise ValueError(f"Unsupported embedding model: {args.embedding_model!r}")
+
+
+def resolve_embedding_sample_rate(embedding_model: str) -> int:
+    try:
+        return EMBEDDING_SAMPLE_RATES[embedding_model]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported embedding model: {embedding_model!r}") from exc
+
+
+def load_initial_training_state_dict(checkpoint_path: str | Path) -> dict[str, Any]:
+    resolved_checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+    checkpoint = torch.load(str(resolved_checkpoint_path), map_location="cpu", weights_only=False)
+    if not isinstance(checkpoint, dict):
+        raise TypeError(
+            f"Training checkpoint at {resolved_checkpoint_path} must contain a dict payload."
+        )
+    if "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+    else:
+        state_dict = checkpoint
+    if not isinstance(state_dict, dict):
+        raise TypeError(
+            f"Training checkpoint at {resolved_checkpoint_path} does not contain a valid state_dict."
+        )
+    return state_dict
 
 
 def pool_embedding_sequence(embedding_sequence: Any) -> Any:
@@ -690,17 +730,17 @@ def parse_devices_argument(devices: str) -> Any:
     return int(normalized)
 
 
-def _get_lightning_runtime() -> tuple[Any, Any, Any, Any]:
+def _get_lightning_runtime() -> tuple[Any, Any, Any, Any, Any]:
     try:
         import lightning.pytorch as pl
-        from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
+        from lightning.pytorch.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
         from lightning.pytorch.loggers import WandbLogger
-        return pl, ModelCheckpoint, LearningRateMonitor, WandbLogger
+        return pl, ModelCheckpoint, EarlyStopping, LearningRateMonitor, WandbLogger
     except ImportError:
         import pytorch_lightning as pl
-        from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+        from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
         from pytorch_lightning.loggers import WandbLogger
-        return pl, ModelCheckpoint, LearningRateMonitor, WandbLogger
+        return pl, ModelCheckpoint, EarlyStopping, LearningRateMonitor, WandbLogger
 
 
 def _get_progress_bar_callback(pl: Any) -> Any:
@@ -716,7 +756,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
     seed = resolve_seed(args.seed)
     args.seed = seed
 
-    pl, ModelCheckpoint, LearningRateMonitor, WandbLogger = _get_lightning_runtime()
+    pl, ModelCheckpoint, EarlyStopping, LearningRateMonitor, WandbLogger = _get_lightning_runtime()
     progress_bar = _get_progress_bar_callback(pl)
 
     dataset_roots = resolve_dataset_roots(args.bsd10k_root, args.bsd35k_root, args.bsd2k_root)
@@ -739,7 +779,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
         args.embedding_model,
     )
 
-    sample_rate = 16000
+    sample_rate = resolve_embedding_sample_rate(args.embedding_model)
 
     train_indices = maybe_limit(list(range(len(train_records))), args.max_train_items)
     val_indices = maybe_limit(list(range(len(val_records))), args.max_val_items)
@@ -922,11 +962,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 return
             logits = np.concatenate([item["logits"] for item in self.validation_outputs], axis=0)
             labels = np.concatenate([item["labels"] for item in self.validation_outputs], axis=0)
-            metadata = [
-                metadata_item
-                for item in self.validation_outputs
-                for metadata_item in item["metadata"]
-            ]
             predictions = logits.argmax(axis=-1)
             metrics = compute_classification_metrics(logits, labels, len(label_specs), id2label=id2label)
             self.log_dict({f"val/{key}": value for key, value in metrics.items()}, prog_bar=True)
@@ -950,11 +985,6 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 return
             logits = np.concatenate([item["logits"] for item in self.test_outputs], axis=0)
             labels = np.concatenate([item["labels"] for item in self.test_outputs], axis=0)
-            metadata = [
-                metadata_item
-                for item in self.test_outputs
-                for metadata_item in item["metadata"]
-            ]
             predictions = logits.argmax(axis=-1)
             metrics = compute_classification_metrics(logits, labels, len(label_specs), id2label=id2label)
             self.log_dict({f"test/{key}": value for key, value in metrics.items()})
@@ -998,14 +1028,21 @@ def run_experiment(args: argparse.Namespace) -> Path:
     random.seed(seed)
 
     lightning_module = ClassificationLightningModule()
+    if args.init_checkpoint_path is not None:
+        initial_state_dict = load_initial_training_state_dict(args.init_checkpoint_path)
+        lightning_module.load_state_dict(initial_state_dict)
 
     experiment_config = {
         "dataset": "BSD10k",
         "include_bsd35k_cs": args.include_bsd35k_cs,
         "dataset_roots": {name: str(path) for name, path in dataset_roots.items()},
         "embedding_model": args.embedding_model,
+        "init_checkpoint_path": (
+            str(Path(args.init_checkpoint_path).expanduser().resolve())
+            if args.init_checkpoint_path is not None
+            else None
+        ),
         "checkpoint_dir": str(Path(args.checkpoint_dir).expanduser().resolve()),
-        "checkpoint_alias": args.checkpoint_alias,
         "trust_checkpoint": args.trust_checkpoint,
         "num_labels": len(label_specs),
         "labels": [
@@ -1042,6 +1079,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "weight_decay": args.weight_decay,
             "head_dropout": args.head_dropout,
             "max_epochs": args.max_epochs,
+            "early_stopping_patience": args.early_stopping_patience,
             "warmup_epochs": args.warmup_epochs,
             "warmup_steps": warmup_steps,
             "lr_decay_start_epoch": args.lr_decay_start_epoch,
@@ -1089,13 +1127,23 @@ def run_experiment(args: argparse.Namespace) -> Path:
         save_top_k=1,
         save_last=True,
     )
+    early_stopping = EarlyStopping(
+        monitor="val/hierarchical_f1",
+        mode="max",
+        patience=args.early_stopping_patience,
+    )
     trainer = pl.Trainer(
         default_root_dir=str(experiment_dir),
         accelerator=args.accelerator,
         devices=parse_devices_argument(args.devices),
         max_epochs=args.max_epochs,
         logger=logger,
-        callbacks=[model_checkpoint, LearningRateMonitor(logging_interval="step"), progress_bar],
+        callbacks=[
+            model_checkpoint,
+            early_stopping,
+            LearningRateMonitor(logging_interval="step"),
+            progress_bar,
+        ],
         gradient_clip_val=args.gradient_clip_val,
         accumulate_grad_batches=args.accumulate_grad_batches,
         precision=args.precision,
@@ -1127,7 +1175,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
         prediction_specs = [
             ("bsd2k_hidden_test_logits.npz", load_full_dataset_records("BSD2k", dataset_roots["BSD2k"])),
             ("bsd10k_logits.npz", load_full_dataset_records("BSD10k", dataset_roots["BSD10k"])),
-            ("bsd35k_cs_logits.npz", load_full_dataset_records("BSD35k-CS", dataset_roots["BSD35k-CS"])),
+            # ("bsd35k_cs_logits.npz", load_full_dataset_records("BSD35k-CS", dataset_roots["BSD35k-CS"])),
         ]
         for filename, records in prediction_specs:
             file_ids, logits = predict_logits_for_records(

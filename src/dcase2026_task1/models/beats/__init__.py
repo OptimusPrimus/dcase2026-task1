@@ -10,10 +10,12 @@ import torch
 from .BEATs import BEATs, BEATsConfig
 from .chunked import ChunkedBEATs
 
+DEFAULT_CHECKPOINT_ALIAS = "beats_iter3plus_as2m"
+
 
 def resolve_checkpoint_path(
     checkpoint_dir: str | Path,
-    checkpoint_alias: str,
+    checkpoint_alias: str = DEFAULT_CHECKPOINT_ALIAS,
 ) -> Path:
     resolved_checkpoint_dir = Path(checkpoint_dir).expanduser().resolve()
     destination = resolved_checkpoint_dir / f"{checkpoint_alias}.pt"
@@ -45,7 +47,7 @@ def validate_checkpoint_file(path: Path) -> None:
 
 def load_embedding_checkpoint(
     checkpoint_dir: str | Path,
-    checkpoint_alias: str,
+    checkpoint_alias: str = DEFAULT_CHECKPOINT_ALIAS,
     *,
     trust_checkpoint: bool,
 ) -> dict[str, Any]:
@@ -69,7 +71,7 @@ def load_embedding_checkpoint(
 def build_beats_embedding_model(
     *,
     checkpoint_dir: str | Path,
-    checkpoint_alias: str,
+    checkpoint_alias: str = DEFAULT_CHECKPOINT_ALIAS,
     trust_checkpoint: bool,
     sample_rate: int,
 ) -> ChunkedBEATs:
@@ -106,6 +108,7 @@ def build_beats_embedding_model(
 
 
 __all__ = [
+    "DEFAULT_CHECKPOINT_ALIAS",
     "BEATs",
     "BEATsConfig",
     "ChunkedBEATs",

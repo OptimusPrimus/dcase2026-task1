@@ -12,22 +12,38 @@ from torch.utils.data import ConcatDataset, Dataset
 DEFAULT_BSD35K_ROOT = Path.home() / "data" / "BSD35k-CS"
 DEFAULT_BSD10K_ROOT = Path.home() / "data" / "BSD10k"
 DEFAULT_BSD2K_ROOT = Path.home() / "data" / "BSD2k"
-DEFAULT_BSD10K_METADATA_SUMMARIES_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "experiments"
-    / "outputs"
-    / "experiments"
-    / "20260610_234726_BSD10k_gpt-5.4-mini_2ffa7194"
-    / "predictions.jsonl"
-)
 DEFAULT_BSD10K_METADATA_CLASS_PROBABILITIES_PATH = (
     Path(__file__).resolve().parent.parent
     / "experiments"
     / "outputs"
     / "experiments"
-    / "20260611_004827_BSD10k_gpt-5.4-mini_a2869640"
+    / "20260611_211801_BSD10k_gpt-5.4-mini_f5706ed2"
     / "predictions.jsonl"
 )
+
+DEFAULT_BSD2K_METADATA_CLASS_PROBABILITIES_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "experiments"
+    / "outputs"
+    / "experiments"
+    / "20260611_211913_BSD2k_gpt-5.4-mini_b628ef79"
+    / "predictions.jsonl"
+)
+
+DEFAULT_BSD35K_METADATA_CLASS_PROBABILITIES_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "experiments"
+    / "outputs"
+    / "experiments"
+    / "20260611_220253_BSD35k-CS_gpt-5.4-mini_f51027cc"
+    / "predictions.jsonl"
+)
+
+DEFAULT_METADATA_CLASS_PROBABILITIES_PATHS = {
+    "BSD10k": DEFAULT_BSD10K_METADATA_CLASS_PROBABILITIES_PATH,
+    "BSD2k": DEFAULT_BSD2K_METADATA_CLASS_PROBABILITIES_PATH,
+    "BSD35k-CS": DEFAULT_BSD35K_METADATA_CLASS_PROBABILITIES_PATH,
+}
 
 
 def load_audio_waveform(audio_path: str | Path) -> tuple[np.ndarray, int]:
@@ -141,38 +157,11 @@ class BSDDataset(Dataset[dict[str, Any]]):
             return None
 
     def _load_extra_metadata_by_index(self) -> dict[int, dict[str, Any]]:
-        if self.spec.name != "BSD10k":
-            return {}
+        return self._load_class_probability_metadata()
 
-        summary_by_index = self._load_bsd10k_summary_metadata()
-        class_probs_by_index = self._load_bsd10k_class_probability_metadata()
-
-        merged: dict[int, dict[str, Any]] = {}
-        for dataset_index in set(summary_by_index) | set(class_probs_by_index):
-            merged[dataset_index] = {
-                "metadata_summary": summary_by_index.get(dataset_index),
-                **class_probs_by_index.get(dataset_index, {}),
-            }
-        return merged
-
-    def _load_bsd10k_summary_metadata(self) -> dict[int, str | None]:
-        jsonl_path = DEFAULT_BSD10K_METADATA_SUMMARIES_PATH
-        if not jsonl_path.exists():
-            return {}
-
-        summary_by_index: dict[int, str | None] = {}
-        for row in self._read_jsonl_rows(jsonl_path):
-            dataset_index = row.get("dataset_index")
-            if isinstance(dataset_index, int):
-                raw_response = row.get("raw_response")
-                summary_by_index[dataset_index] = (
-                    raw_response if isinstance(raw_response, str) else None
-                )
-        return summary_by_index
-
-    def _load_bsd10k_class_probability_metadata(self) -> dict[int, dict[str, Any]]:
-        jsonl_path = DEFAULT_BSD10K_METADATA_CLASS_PROBABILITIES_PATH
-        if not jsonl_path.exists():
+    def _load_class_probability_metadata(self) -> dict[int, dict[str, Any]]:
+        jsonl_path = DEFAULT_METADATA_CLASS_PROBABILITIES_PATHS.get(self.spec.name)
+        if jsonl_path is None or not jsonl_path.exists():
             return {}
 
         probabilities_by_index: dict[int, dict[str, Any]] = {}
@@ -218,7 +207,6 @@ class BSDDataset(Dataset[dict[str, Any]]):
             class_description = self._resolve_class_description(class_idx)
 
             extra_metadata = self.extra_metadata_by_index.get(dataset_index, {})
-            metadata_summary = extra_metadata.get("metadata_summary")
             metadata_class_probabilities_raw = extra_metadata.get(
                 "metadata_class_probabilities_raw"
             )
@@ -241,7 +229,6 @@ class BSDDataset(Dataset[dict[str, Any]]):
                 "description": row.get("description"),
                 "audio_path": str(audio_path),
                 "source_dataset": self.spec.name,
-                "metadata_summary": metadata_summary,
                 "metadata_class_probabilities_raw": metadata_class_probabilities_raw,
                 "metadata_class_probabilities": metadata_class_probabilities,
                 "metadata": {
@@ -257,7 +244,6 @@ class BSDDataset(Dataset[dict[str, Any]]):
                     "title": row.get("title"),
                     "tags": row.get("tags"),
                     "description": row.get("description"),
-                    "metadata_summary": metadata_summary,
                     "metadata_class_probabilities_raw": metadata_class_probabilities_raw,
                     "metadata_class_probabilities": metadata_class_probabilities,
                 },

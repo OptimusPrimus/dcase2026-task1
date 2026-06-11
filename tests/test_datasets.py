@@ -108,21 +108,16 @@ def _write_bsd2k_fixture(root: Path) -> None:
     )
 
 
-def test_bsd10k_dataset_loads_extra_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    dataset_root = tmp_path / "BSD10k"
-    _write_dataset_fixture(dataset_root, "BSD10k")
+@pytest.mark.parametrize("dataset_name", ["BSD10k", "BSD35k-CS", "BSD2k"])
+def test_dataset_loads_class_probability_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dataset_name: str
+) -> None:
+    dataset_root = tmp_path / dataset_name
+    if dataset_name == "BSD2k":
+        _write_bsd2k_fixture(dataset_root)
+    else:
+        _write_dataset_fixture(dataset_root, dataset_name)
 
-    summaries_path = tmp_path / "summaries.jsonl"
-    summaries_path.write_text(
-        "\n".join(
-            [
-                json.dumps({"dataset_index": 0, "raw_response": "summary one"}),
-                json.dumps({"dataset_index": 1, "raw_response": "summary two"}),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
     class_probs_path = tmp_path / "class_probs.jsonl"
     class_probs_path.write_text(
         "\n".join(
@@ -143,19 +138,14 @@ def test_bsd10k_dataset_loads_extra_metadata(monkeypatch: pytest.MonkeyPatch, tm
     )
 
     monkeypatch.setattr(
-        "dcase2026_task1.data.datasets.DEFAULT_BSD10K_METADATA_SUMMARIES_PATH",
-        summaries_path,
-    )
-    monkeypatch.setattr(
-        "dcase2026_task1.data.datasets.DEFAULT_BSD10K_METADATA_CLASS_PROBABILITIES_PATH",
-        class_probs_path,
+        "dcase2026_task1.data.datasets.DEFAULT_METADATA_CLASS_PROBABILITIES_PATHS",
+        {dataset_name: class_probs_path},
     )
 
-    dataset = BSDDataset(root=dataset_root, dataset_name="BSD10k", load_audio=False)
+    dataset = BSDDataset(root=dataset_root, dataset_name=dataset_name, load_audio=False)
 
     item0 = dataset[0]
     assert item0["dataset_index"] == 0
-    assert item0["metadata_summary"] == "summary one"
     assert item0["metadata_class_probabilities_raw"] == (
         '[{"label":"fx-o","probability":0.8},{"label":"other","probability":0.2}]'
     )
@@ -163,7 +153,6 @@ def test_bsd10k_dataset_loads_extra_metadata(monkeypatch: pytest.MonkeyPatch, tm
         {"label": "fx-o", "probability": 0.8},
         {"label": "other", "probability": 0.2},
     ]
-    assert item0["metadata"]["metadata_summary"] == "summary one"
     assert item0["metadata"]["metadata_class_probabilities"] == [
         {"label": "fx-o", "probability": 0.8},
         {"label": "other", "probability": 0.2},
@@ -171,12 +160,11 @@ def test_bsd10k_dataset_loads_extra_metadata(monkeypatch: pytest.MonkeyPatch, tm
 
     item1 = dataset[1]
     assert item1["dataset_index"] == 1
-    assert item1["metadata_summary"] == "summary two"
     assert item1["metadata_class_probabilities_raw"] == "not json"
     assert item1["metadata_class_probabilities"] is None
 
 
-def test_non_bsd10k_dataset_keeps_extra_metadata_empty(tmp_path: Path) -> None:
+def test_dataset_without_class_probability_metadata_keeps_extra_metadata_empty(tmp_path: Path) -> None:
     dataset_root = tmp_path / "BSD35k-CS"
     _write_dataset_fixture(dataset_root, "BSD35k-CS")
 
@@ -184,7 +172,6 @@ def test_non_bsd10k_dataset_keeps_extra_metadata_empty(tmp_path: Path) -> None:
 
     item = dataset[0]
     assert item["dataset_index"] == 0
-    assert item["metadata_summary"] is None
     assert item["metadata_class_probabilities_raw"] is None
     assert item["metadata_class_probabilities"] is None
 

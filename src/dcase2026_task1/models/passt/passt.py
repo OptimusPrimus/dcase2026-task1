@@ -520,7 +520,7 @@ class PaSST(nn.Module):
             else:
                 time_new_pos_embed = time_new_pos_embed[:, :, :, :x.shape[-1]]
             if first_RUN: print(" CUT time_new_pos_embed.shape", time_new_pos_embed.shape)
-        else:
+        elif x.shape[-1] > time_new_pos_embed.shape[-1]:
             warnings.warn(
                 f"the patches shape:{x.shape} are larger than the expected time encodings {time_new_pos_embed.shape}, x will be cut")
             x = x[:, :, :, :time_new_pos_embed.shape[-1]]
@@ -912,7 +912,20 @@ def passt_s_p16_s16_128_ap468(pretrained=False, **kwargs):
     return model
 
 
-from ba3l.ingredients.ingredient import Ingredient
+try:
+    from ba3l.ingredients.ingredient import Ingredient
+except ModuleNotFoundError:
+    class Ingredient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def add_config(self, **_kwargs):
+            return None
+
+        def command(self, fn=None, **_kwargs):
+            if fn is None:
+                return lambda wrapped: wrapped
+            return fn
 
 model_ing = Ingredient("passt")
 

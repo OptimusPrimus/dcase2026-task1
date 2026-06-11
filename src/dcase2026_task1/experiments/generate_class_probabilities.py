@@ -15,18 +15,21 @@ from tqdm import tqdm
 from dcase2026_task1.data.datasets import (
     DEFAULT_BSD10K_ROOT,
     DEFAULT_BSD35K_ROOT,
+    DEFAULT_BSD2K_ROOT,
     BSDDataset,
 )
 
 DEFAULT_MODEL_ID = "gpt-5.4-mini"
 DEFAULT_COMPLETION_WINDOW = "24h"
 DEFAULT_OUTPUT_ROOT = "outputs/experiments"
+BATCH_DIR_PREFIX = "batch_"
 REQUESTS_FILENAME = "batch_requests.jsonl"
 INPUT_ROWS_FILENAME = "input_rows.jsonl"
 BATCH_STATE_FILENAME = "batch_state.json"
 RAW_OUTPUT_FILENAME = "batch_output.jsonl"
 RAW_ERROR_FILENAME = "batch_errors.jsonl"
 PREDICTIONS_FILENAME = "predictions.jsonl"
+BASE_PREDICTIONS_FILENAME = "base_predictions.jsonl"
 CONFIG_FILENAME = "config.json"
 
 
@@ -62,8 +65,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate metadata summaries with OpenAI batch jobs and resumable outputs."
     )
-    parser.add_argument("action", choices=["submit", "status", "download"], nargs="?", default="submit")
-    parser.add_argument("--dataset", choices=["BSD10k", "BSD35k-CS"], default="BSD10k")
+    parser.add_argument(
+        "action",
+        choices=["prepare", "submit", "submit-batch", "status", "download", "complete"],
+        nargs="?",
+        default="submit",
+    )
+    parser.add_argument("--dataset", choices=["BSD10k", "BSD35k-CS", "BSD2k"], default="BSD10k")
     parser.add_argument("--dataset-root", default=None)
     parser.add_argument("--experiment-dir", default=None)
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
@@ -73,6 +81,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enable-reasoning", action="store_true")
     parser.add_argument("--reasoning-effort", choices=["low", "medium", "high"], default="medium")
     parser.add_argument("--max-items", type=int, default=None)
+    parser.add_argument("--num-batches", type=int, default=1)
+    parser.add_argument("--batch-index", type=int, default=None)
     parser.add_argument("--completion-window", default=DEFAULT_COMPLETION_WINDOW)
     parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--dry-run", action="store_true")
@@ -84,6 +94,8 @@ def resolve_dataset_root(dataset_name: str, explicit_root: str | None) -> Path:
         return Path(explicit_root)
     if dataset_name == "BSD10k":
         return DEFAULT_BSD10K_ROOT
+    elif dataset_name == "BSD2k":
+        return DEFAULT_BSD2K_ROOT
     return DEFAULT_BSD35K_ROOT
 
 
@@ -297,8 +309,8 @@ def create_experiment_dir(output_root: Path, dataset_name: str, model_id: str) -
 def resolve_experiment_dir(args: argparse.Namespace) -> Path:
     if args.experiment_dir is not None:
         return Path(args.experiment_dir)
-    if args.action != "submit":
-        raise ValueError("--experiment-dir is required for status and download actions.")
+    if args.action not in {"prepare", "submit"}:
+        raise ValueError("--experiment-dir is required for submit-batch, status, download, and complete actions.")
     return create_experiment_dir(Path(args.output_root), args.dataset, args.model_id)
 
 
@@ -323,12 +335,67 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            rows.append(json.loads(line))
+    return rows
+
+
+def write_jsonl_rows(path: Path, rows: list[dict[str, Any]]) -> int:
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return len(rows)
+
+
 def write_batch_state(path: Path, state: BatchState) -> None:
     write_json(path, state.__dict__)
 
 
 def load_batch_state(path: Path) -> BatchState:
     return BatchState(**load_json(path))
+
+
+def actual_num_batches(num_batches: int, num_rows: int) -> int:
+    if num_batches < 1:
+        raise ValueError("--num-batches must be at least 1.")
+    if num_rows <= 0:
+        return 1
+    return min(num_batches, num_rows)
+
+
+def batch_dir_name(index: int) -> str:
+    return f"{BATCH_DIR_PREFIX}{index:04d}"
+
+
+def resolve_batch_dirs(experiment_dir: Path) -> list[Path]:
+    batch_dirs = sorted(
+        path for path in experiment_dir.iterdir() if path.is_dir() and path.name.startswith(BATCH_DIR_PREFIX)
+    )
+    if batch_dirs:
+        return batch_dirs
+    return [experiment_dir]
+
+
+def resolve_target_batch_dir(experiment_dir: Path, batch_index: int | None) -> Path:
+    batch_dirs = resolve_batch_dirs(experiment_dir)
+    if len(batch_dirs) == 1:
+        if batch_index not in {None, 0}:
+            raise ValueError(f"--batch-index {batch_index} is invalid: {experiment_dir} contains a single batch only.")
+        return batch_dirs[0]
+
+    if batch_index is None:
+        raise ValueError("--batch-index is required when the experiment contains multiple batches.")
+
+    target_name = batch_dir_name(batch_index)
+    for batch_dir in batch_dirs:
+        if batch_dir.name == target_name:
+            return batch_dir
+    raise FileNotFoundError(f"No batch directory found for --batch-index {batch_index} ({target_name}).")
 
 
 def build_request_body(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
@@ -354,12 +421,82 @@ def build_request_record(custom_id: str, body: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def split_rows_into_batches(rows: list[dict[str, Any]], num_batches: int) -> list[list[dict[str, Any]]]:
+    if not rows:
+        return [[]]
+
+    actual_batches = actual_num_batches(num_batches, len(rows))
+    base_size, remainder = divmod(len(rows), actual_batches)
+    batches: list[list[dict[str, Any]]] = []
+    start = 0
+    for batch_index in range(actual_batches):
+        batch_size = base_size + (1 if batch_index < remainder else 0)
+        end = start + batch_size
+        batches.append(rows[start:end])
+        start = end
+    return batches
+
+
+def write_request_files(args: argparse.Namespace, target_dir: Path, rows: list[dict[str, Any]]) -> None:
+    with (target_dir / INPUT_ROWS_FILENAME).open("w", encoding="utf-8") as input_handle, (
+        target_dir / REQUESTS_FILENAME
+    ).open("w", encoding="utf-8") as request_handle:
+        for row in rows:
+            input_handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            request_handle.write(
+                json.dumps(
+                    build_request_record(row["custom_id"], build_request_body(args, row["prompt"])),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+
+def prepare_batch_directories(
+    args: argparse.Namespace,
+    experiment_dir: Path,
+    rows: list[dict[str, Any]],
+) -> list[Path]:
+    row_batches = split_rows_into_batches(rows, args.num_batches)
+    if len(row_batches) == 1:
+        write_request_files(args, experiment_dir, row_batches[0])
+        return [experiment_dir]
+
+    batch_dirs: list[Path] = []
+    for batch_index, batch_rows in enumerate(row_batches):
+        batch_dir = experiment_dir / batch_dir_name(batch_index)
+        batch_dir.mkdir(parents=True, exist_ok=False)
+        write_request_files(args, batch_dir, batch_rows)
+        batch_dirs.append(batch_dir)
+    return batch_dirs
+
+
 def prepare_input_rows(args: argparse.Namespace, experiment_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     dataset_root = resolve_dataset_root(args.dataset, args.dataset_root)
     dataset = BSDDataset(root=dataset_root, dataset_name=args.dataset, load_audio=False)
     limit = len(dataset) if args.max_items is None else min(len(dataset), args.max_items)
     if args.dry_run and args.max_items is None:
         limit = min(limit, 5)
+
+    rows: list[dict[str, Any]] = []
+    for index in tqdm(range(limit), desc="Preparing requests", unit="item"):
+        item = dataset[index]
+        prompt = build_prompt(item)
+        custom_id = f"dataset-index-{index}"
+        row = {
+            "custom_id": custom_id,
+            "dataset_index": index,
+            "sound_id": item["sound_id"],
+            "source_dataset": item["source_dataset"],
+            "audio_path": item["audio_path"],
+            "title": item.get("title", ""),
+            "tags": item.get("tags", ""),
+            "description": item.get("description", ""),
+            "target_class_idx": int(item.get("class_idx") or -1),
+            "target_class": item.get("class"),
+            "prompt": prompt,
+        }
+        rows.append(row)
 
     config = {
         "dataset": args.dataset,
@@ -373,36 +510,12 @@ def prepare_input_rows(args: argparse.Namespace, experiment_dir: Path) -> tuple[
         "completion_window": args.completion_window,
         "dry_run": args.dry_run,
         "num_items": limit,
+        "num_batches_requested": args.num_batches,
+        "num_batches_actual": actual_num_batches(args.num_batches, len(rows)),
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
     write_json(experiment_dir / CONFIG_FILENAME, config)
-
-    rows: list[dict[str, Any]] = []
-    with (experiment_dir / INPUT_ROWS_FILENAME).open("w", encoding="utf-8") as input_handle, (
-        experiment_dir / REQUESTS_FILENAME
-    ).open("w", encoding="utf-8") as request_handle:
-        for index in tqdm(range(limit), desc="Preparing requests", unit="item"):
-            item = dataset[index]
-            prompt = build_prompt(item)
-            custom_id = f"dataset-index-{index}"
-            row = {
-                "custom_id": custom_id,
-                "dataset_index": index,
-                "sound_id": item["sound_id"],
-                "source_dataset": item["source_dataset"],
-                "audio_path": item["audio_path"],
-                "title": item.get("title", ""),
-                "tags": item.get("tags", ""),
-                "description": item.get("description", ""),
-                "target_class_idx": int(item["class_idx"]),
-                "target_class": item["class"],
-                "prompt": prompt,
-            }
-            rows.append(row)
-            input_handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-            request_handle.write(
-                json.dumps(build_request_record(custom_id, build_request_body(args, prompt)), ensure_ascii=False) + "\n"
-            )
+    write_jsonl_rows(experiment_dir / INPUT_ROWS_FILENAME, rows)
 
     return config, rows
 
@@ -477,12 +590,8 @@ def download_file_text(client: Any, file_id: str) -> str:
 
 def load_input_rows(path: Path) -> dict[str, dict[str, Any]]:
     rows_by_custom_id: dict[str, dict[str, Any]] = {}
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            rows_by_custom_id[row["custom_id"]] = row
+    for row in load_jsonl_rows(path):
+        rows_by_custom_id[row["custom_id"]] = row
     return rows_by_custom_id
 
 
@@ -518,11 +627,35 @@ def extract_reasoning_summary(response_body: dict[str, Any]) -> str | None:
     return "\n\n".join(summaries)
 
 
-def materialize_predictions(
+def normalize_raw_response(raw_response: Any) -> str | None:
+    if not isinstance(raw_response, str):
+        return None
+
+    raw_response = raw_response.strip()
+    if not raw_response:
+        return None
+
+    try:
+        json.loads(raw_response)
+        return raw_response
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    try:
+        parsed, end_index = decoder.raw_decode(raw_response)
+    except json.JSONDecodeError:
+        return None
+
+    if raw_response[end_index:].strip():
+        return json.dumps(parsed, ensure_ascii=False)
+    return raw_response
+
+
+def build_prediction_rows(
     input_rows_by_custom_id: dict[str, dict[str, Any]],
     raw_output_text: str,
-    predictions_path: Path,
-) -> int:
+) -> list[dict[str, Any]]:
     output_rows_by_custom_id: dict[str, dict[str, Any]] = {}
     for line in raw_output_text.splitlines():
         if not line.strip():
@@ -533,107 +666,286 @@ def materialize_predictions(
             continue
         output_rows_by_custom_id[custom_id] = batch_row
 
-    written = 0
+    rows: list[dict[str, Any]] = []
     ordered_input_rows = sorted(
         input_rows_by_custom_id.values(),
         key=lambda row: int(row["dataset_index"]),
     )
-    with predictions_path.open("w", encoding="utf-8") as handle:
-        for input_row in ordered_input_rows:
-            batch_row = output_rows_by_custom_id.get(input_row["custom_id"], {})
-            response = batch_row.get("response") or {}
-            response_body = response.get("body") or {}
-            row = {
+    for input_row in ordered_input_rows:
+        batch_row = output_rows_by_custom_id.get(input_row["custom_id"], {})
+        response = batch_row.get("response") or {}
+        response_body = response.get("body") or {}
+        normalized_raw_response = normalize_raw_response(extract_output_text(response_body))
+        rows.append(
+            {
                 **input_row,
                 "batch_request_id": batch_row.get("id"),
                 "status_code": response.get("status_code"),
-                "raw_response": extract_output_text(response_body) or None,
+                "raw_response": normalized_raw_response,
                 "reasoning": extract_reasoning_summary(response_body),
                 "error": batch_row.get("error"),
             }
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-            written += 1
-    return written
+        )
+    return rows
+
+
+def prediction_failed(row: dict[str, Any]) -> bool:
+    raw_response = normalize_raw_response(row.get("raw_response"))
+    if row.get("error") is not None:
+        return True
+    if row.get("status_code") != 200:
+        return True
+    return raw_response is None
+
+
+def merge_prediction_rows(
+    base_rows: list[dict[str, Any]],
+    retry_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows_by_custom_id: dict[str, dict[str, Any]] = {}
+    for row in base_rows:
+        rows_by_custom_id[row["custom_id"]] = row
+    for row in retry_rows:
+        rows_by_custom_id[row["custom_id"]] = row
+    return sorted(rows_by_custom_id.values(), key=lambda row: int(row["dataset_index"]))
+
+
+def clone_args_for_completion(args: argparse.Namespace, source_config: dict[str, Any]) -> argparse.Namespace:
+    cloned = vars(args).copy()
+    cloned["dataset"] = source_config["dataset"]
+    cloned["dataset_root"] = source_config["dataset_root"]
+    cloned["model_id"] = source_config["model_id"]
+    cloned["api_base"] = source_config.get("api_base")
+    cloned["enable_reasoning"] = bool(source_config["enable_reasoning"])
+    cloned["reasoning_effort"] = source_config["reasoning_effort"]
+    cloned["completion_window"] = source_config["completion_window"]
+    return argparse.Namespace(**cloned)
 
 
 def run_submit(args: argparse.Namespace, experiment_dir: Path) -> Path:
     experiment_dir.mkdir(parents=True, exist_ok=True)
-    requests_path = experiment_dir / REQUESTS_FILENAME
-    state_path = experiment_dir / BATCH_STATE_FILENAME
     predictions_path = experiment_dir / PREDICTIONS_FILENAME
 
-    if state_path.exists():
+    if (experiment_dir / BATCH_STATE_FILENAME).exists():
         raise FileExistsError(
-            f"Batch state already exists at {state_path}. Use 'status' or 'download' with --experiment-dir instead of resubmitting."
+            f"Batch state already exists at {experiment_dir / BATCH_STATE_FILENAME}. Use 'status' or 'download' with --experiment-dir instead of resubmitting."
         )
     if predictions_path.exists():
         raise FileExistsError(
             f"Predictions already exist at {predictions_path}. Refusing to overwrite an existing experiment directory."
         )
 
-    prepare_input_rows(args, experiment_dir)
+    _config, rows = prepare_input_rows(args, experiment_dir)
+    batch_dirs = prepare_batch_directories(args, experiment_dir, rows)
     if args.dry_run:
         return experiment_dir
 
     client = ensure_openai_client(args.api_key, args.api_base)
-    input_file_id = upload_batch_file(client, requests_path)
-    batch_state = submit_batch_job(client, args, input_file_id, experiment_dir)
-    write_batch_state(state_path, batch_state)
+    for batch_dir in batch_dirs:
+        input_file_id = upload_batch_file(client, batch_dir / REQUESTS_FILENAME)
+        batch_state = submit_batch_job(client, args, input_file_id, batch_dir)
+        write_batch_state(batch_dir / BATCH_STATE_FILENAME, batch_state)
     return experiment_dir
 
 
-def run_status(args: argparse.Namespace, experiment_dir: Path) -> tuple[Path, str | None]:
-    state_path = experiment_dir / BATCH_STATE_FILENAME
-    if not state_path.exists():
-        raise FileNotFoundError(f"No batch state found at {state_path}.")
+def run_prepare(args: argparse.Namespace, experiment_dir: Path) -> Path:
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+    predictions_path = experiment_dir / PREDICTIONS_FILENAME
+
+    if (experiment_dir / BATCH_STATE_FILENAME).exists():
+        raise FileExistsError(
+            f"Batch state already exists at {experiment_dir / BATCH_STATE_FILENAME}. Refusing to prepare over an existing submitted experiment."
+        )
+    if predictions_path.exists():
+        raise FileExistsError(
+            f"Predictions already exist at {predictions_path}. Refusing to overwrite an existing experiment directory."
+        )
+    if any(path.name.startswith(BATCH_DIR_PREFIX) for path in experiment_dir.iterdir()):
+        raise FileExistsError(
+            f"Batch subdirectories already exist in {experiment_dir}. Refusing to overwrite prepared batch inputs."
+        )
+    if (experiment_dir / REQUESTS_FILENAME).exists() or (experiment_dir / INPUT_ROWS_FILENAME).exists():
+        raise FileExistsError(
+            f"Batch input files already exist in {experiment_dir}. Refusing to overwrite prepared batch inputs."
+        )
+
+    _config, rows = prepare_input_rows(args, experiment_dir)
+    prepare_batch_directories(args, experiment_dir, rows)
+    return experiment_dir
+
+
+def run_submit_batch(args: argparse.Namespace, experiment_dir: Path) -> tuple[Path, Path, BatchState]:
+    batch_dir = resolve_target_batch_dir(experiment_dir, args.batch_index)
+    request_path = batch_dir / REQUESTS_FILENAME
+    state_path = batch_dir / BATCH_STATE_FILENAME
+    if not request_path.exists():
+        raise FileNotFoundError(f"No batch requests found at {request_path}. Run 'prepare' first.")
+    if state_path.exists():
+        raise FileExistsError(
+            f"Batch state already exists at {state_path}. This batch has already been submitted."
+        )
 
     if args.dry_run:
-        state = load_batch_state(state_path)
-        return experiment_dir, state.status
-
-    client = ensure_openai_client(args.api_key, args.api_base)
-    refreshed_state, _batch = refresh_batch_state(client, load_batch_state(state_path))
-    write_batch_state(state_path, refreshed_state)
-    return experiment_dir, refreshed_state.status
-
-
-def run_download(args: argparse.Namespace, experiment_dir: Path) -> tuple[Path, int]:
-    state_path = experiment_dir / BATCH_STATE_FILENAME
-    if not state_path.exists():
-        raise FileNotFoundError(f"No batch state found at {state_path}.")
-
-    client = ensure_openai_client(args.api_key, args.api_base)
-    state, batch = refresh_batch_state(client, load_batch_state(state_path))
-    write_batch_state(state_path, state)
-
-    status = getattr(batch, "status", None)
-    if status != "completed":
-        raise RuntimeError(
-            f"Batch {state.batch_id} is not ready for download. Current status: {status!r}."
+        return experiment_dir, batch_dir, BatchState(
+            batch_id="dry-run",
+            input_file_id="dry-run",
+            created_at=datetime.now().isoformat(timespec="seconds"),
+            status="prepared",
         )
-    if not state.output_file_id:
-        raise RuntimeError(f"Batch {state.batch_id} completed without an output_file_id.")
 
-    raw_output_text = download_file_text(client, state.output_file_id)
-    raw_output_path = experiment_dir / RAW_OUTPUT_FILENAME
-    raw_output_path.write_text(raw_output_text, encoding="utf-8")
+    client = ensure_openai_client(args.api_key, args.api_base)
+    input_file_id = upload_batch_file(client, request_path)
+    batch_state = submit_batch_job(client, args, input_file_id, batch_dir)
+    write_batch_state(state_path, batch_state)
+    return experiment_dir, batch_dir, batch_state
 
-    if state.error_file_id:
-        raw_error_path = experiment_dir / RAW_ERROR_FILENAME
-        raw_error_path.write_text(download_file_text(client, state.error_file_id), encoding="utf-8")
 
-    input_rows = load_input_rows(experiment_dir / INPUT_ROWS_FILENAME)
-    written = materialize_predictions(
-        input_rows_by_custom_id=input_rows,
-        raw_output_text=raw_output_text,
-        predictions_path=experiment_dir / PREDICTIONS_FILENAME,
+def summarize_batch_statuses(statuses: list[str | None]) -> str | None:
+    if not statuses:
+        return None
+    if len(statuses) == 1:
+        return statuses[0]
+
+    counts: dict[str, int] = {}
+    for status in statuses:
+        label = status or "unknown"
+        counts[label] = counts.get(label, 0) + 1
+    summary = ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
+    return f"{summary} (total={len(statuses)})"
+
+
+def run_status(args: argparse.Namespace, experiment_dir: Path) -> tuple[Path, str | None]:
+    batch_dirs = resolve_batch_dirs(experiment_dir)
+    statuses: list[str | None] = []
+
+    client = None if args.dry_run else ensure_openai_client(args.api_key, args.api_base)
+    for batch_dir in batch_dirs:
+        state_path = batch_dir / BATCH_STATE_FILENAME
+        if not state_path.exists():
+            raise FileNotFoundError(f"No batch state found at {state_path}.")
+
+        if args.dry_run:
+            statuses.append(load_batch_state(state_path).status)
+            continue
+
+        refreshed_state, _batch = refresh_batch_state(client, load_batch_state(state_path))
+        write_batch_state(state_path, refreshed_state)
+        statuses.append(refreshed_state.status)
+
+    return experiment_dir, summarize_batch_statuses(statuses)
+
+
+def run_download(args: argparse.Namespace, experiment_dir: Path) -> tuple[Path, int, list[dict[str, Any]]]:
+    batch_dirs = resolve_batch_dirs(experiment_dir)
+    client = ensure_openai_client(args.api_key, args.api_base)
+    new_rows: list[dict[str, Any]] = []
+    for batch_dir in batch_dirs:
+        state_path = batch_dir / BATCH_STATE_FILENAME
+        if not state_path.exists():
+            raise FileNotFoundError(f"No batch state found at {state_path}.")
+
+        state, batch = refresh_batch_state(client, load_batch_state(state_path))
+        write_batch_state(state_path, state)
+
+        status = getattr(batch, "status", None)
+        if status != "completed":
+            raise RuntimeError(
+                f"Batch {state.batch_id} in {batch_dir} is not ready for download. Current status: {status!r}."
+            )
+        if not state.output_file_id:
+            raise RuntimeError(f"Batch {state.batch_id} in {batch_dir} completed without an output_file_id.")
+
+        raw_output_text = download_file_text(client, state.output_file_id)
+        (batch_dir / RAW_OUTPUT_FILENAME).write_text(raw_output_text, encoding="utf-8")
+
+        if state.error_file_id:
+            (batch_dir / RAW_ERROR_FILENAME).write_text(
+                download_file_text(client, state.error_file_id),
+                encoding="utf-8",
+            )
+
+        input_rows = load_input_rows(batch_dir / INPUT_ROWS_FILENAME)
+        batch_prediction_rows = build_prediction_rows(
+            input_rows_by_custom_id=input_rows,
+            raw_output_text=raw_output_text,
+        )
+        write_jsonl_rows(batch_dir / PREDICTIONS_FILENAME, batch_prediction_rows)
+        new_rows.extend(batch_prediction_rows)
+
+    new_rows = sorted(new_rows, key=lambda row: int(row["dataset_index"]))
+    base_predictions_path = experiment_dir / BASE_PREDICTIONS_FILENAME
+    merged_rows = new_rows
+    if base_predictions_path.exists():
+        merged_rows = merge_prediction_rows(load_jsonl_rows(base_predictions_path), new_rows)
+    written = write_jsonl_rows(experiment_dir / PREDICTIONS_FILENAME, merged_rows)
+    invalid_rows = [row for row in merged_rows if prediction_failed(row)]
+    return experiment_dir, written, invalid_rows
+
+
+def run_complete(args: argparse.Namespace, experiment_dir: Path) -> Path:
+    source_predictions_path = experiment_dir / PREDICTIONS_FILENAME
+    source_input_rows_path = experiment_dir / INPUT_ROWS_FILENAME
+    source_config_path = experiment_dir / CONFIG_FILENAME
+    if not source_predictions_path.exists():
+        raise FileNotFoundError(f"No predictions found at {source_predictions_path}. Run 'download' first.")
+    if not source_input_rows_path.exists():
+        raise FileNotFoundError(f"No input rows found at {source_input_rows_path}.")
+    if not source_config_path.exists():
+        raise FileNotFoundError(f"No config found at {source_config_path}.")
+
+    source_predictions = load_jsonl_rows(source_predictions_path)
+    completed_rows = [row for row in source_predictions if not prediction_failed(row)]
+    failed_rows = [row for row in source_predictions if prediction_failed(row)]
+    if not failed_rows:
+        raise RuntimeError(f"No failed predictions found in {source_predictions_path}.")
+
+    source_config = load_json(source_config_path)
+    completion_args = clone_args_for_completion(args, source_config)
+    completion_dir = create_experiment_dir(
+        Path(args.output_root),
+        source_config["dataset"],
+        source_config["model_id"],
     )
-    return experiment_dir, written
+
+    source_input_rows = load_input_rows(source_input_rows_path)
+    failed_input_rows = [source_input_rows[row["custom_id"]] for row in failed_rows]
+
+    completion_config = dict(source_config)
+    completion_config.update(
+        {
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "num_items": len(failed_input_rows),
+            "num_batches_requested": args.num_batches,
+            "num_batches_actual": actual_num_batches(args.num_batches, len(failed_input_rows)),
+            "completed_items_from_parent": len(completed_rows),
+            "failed_items_from_parent": len(failed_input_rows),
+            "parent_experiment_dir": str(experiment_dir),
+        }
+    )
+    write_json(completion_dir / CONFIG_FILENAME, completion_config)
+    write_jsonl_rows(completion_dir / BASE_PREDICTIONS_FILENAME, completed_rows)
+    write_jsonl_rows(completion_dir / INPUT_ROWS_FILENAME, failed_input_rows)
+    batch_dirs = prepare_batch_directories(completion_args, completion_dir, failed_input_rows)
+
+    if args.dry_run:
+        return completion_dir
+
+    client = ensure_openai_client(args.api_key, args.api_base)
+    for batch_dir in batch_dirs:
+        input_file_id = upload_batch_file(client, batch_dir / REQUESTS_FILENAME)
+        batch_state = submit_batch_job(client, completion_args, input_file_id, batch_dir)
+        write_batch_state(batch_dir / BATCH_STATE_FILENAME, batch_state)
+    return completion_dir
 
 
 def main() -> None:
     args = build_parser().parse_args()
     experiment_dir = resolve_experiment_dir(args)
+
+    if args.action == "prepare":
+        output_dir = run_prepare(args, experiment_dir)
+        print(f"Prepared batch inputs in {output_dir}")
+        return
 
     if args.action == "submit":
         output_dir = run_submit(args, experiment_dir)
@@ -641,8 +953,25 @@ def main() -> None:
             print(f"Prepared batch inputs in {output_dir} (dry run, no OpenAI job submitted)")
             return
 
-        state = load_batch_state(output_dir / BATCH_STATE_FILENAME)
-        print(f"Submitted OpenAI batch job {state.batch_id} in {output_dir}")
+        batch_dirs = resolve_batch_dirs(output_dir)
+        if len(batch_dirs) == 1:
+            state = load_batch_state(output_dir / BATCH_STATE_FILENAME)
+            print(f"Submitted OpenAI batch job {state.batch_id} in {output_dir}")
+            return
+
+        print(f"Submitted {len(batch_dirs)} OpenAI batch jobs in {output_dir}")
+        for batch_dir in batch_dirs:
+            state = load_batch_state(batch_dir / BATCH_STATE_FILENAME)
+            print(f"{batch_dir.name}: {state.batch_id}")
+        return
+
+    if args.action == "submit-batch":
+        output_dir, batch_dir, state = run_submit_batch(args, experiment_dir)
+        if args.dry_run:
+            print(f"Validated prepared batch inputs for {batch_dir} (dry run, no OpenAI job submitted)")
+            return
+
+        print(f"Submitted OpenAI batch job {state.batch_id} for {batch_dir} in {output_dir}")
         return
 
     if args.action == "status":
@@ -650,8 +979,43 @@ def main() -> None:
         print(f"Batch status for {output_dir}: {status}")
         return
 
-    output_dir, num_rows = run_download(args, experiment_dir)
-    print(f"Downloaded batch results to {output_dir / PREDICTIONS_FILENAME} ({num_rows} rows)")
+    if args.action == "complete":
+        output_dir = run_complete(args, experiment_dir)
+        if args.dry_run:
+            print(f"Prepared completion batch inputs in {output_dir} (dry run, no OpenAI job submitted)")
+            return
+
+        batch_dirs = resolve_batch_dirs(output_dir)
+        if len(batch_dirs) == 1:
+            state = load_batch_state(output_dir / BATCH_STATE_FILENAME)
+            print(f"Submitted completion batch job {state.batch_id} in {output_dir}")
+            return
+
+        print(f"Submitted {len(batch_dirs)} completion batch jobs in {output_dir}")
+        for batch_dir in batch_dirs:
+            state = load_batch_state(batch_dir / BATCH_STATE_FILENAME)
+            print(f"{batch_dir.name}: {state.batch_id}")
+        return
+
+    output_dir, num_rows, invalid_rows = run_download(args, experiment_dir)
+    print(
+        f"Downloaded batch results to {output_dir / PREDICTIONS_FILENAME} "
+        f"({num_rows} rows, {len(invalid_rows)} invalid responses)"
+    )
+    for row in invalid_rows:
+        print(
+            json.dumps(
+                {
+                    "custom_id": row.get("custom_id"),
+                    "dataset_index": row.get("dataset_index"),
+                    "sound_id": row.get("sound_id"),
+                    "status_code": row.get("status_code"),
+                    "error": row.get("error"),
+                    "raw_response": row.get("raw_response"),
+                },
+                ensure_ascii=False,
+            )
+        )
 
 
 if __name__ == "__main__":
