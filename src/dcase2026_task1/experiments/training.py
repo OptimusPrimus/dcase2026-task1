@@ -17,6 +17,7 @@ from dcase2026_task1.data.splits import (
     DEFAULT_BSD_SPLIT_SEED,
     get_experiment_records,
 )
+from dcase2026_task1.models.M2D import build_m2d_embedding_model
 from dcase2026_task1.models.beats import build_beats_embedding_model
 from dcase2026_task1.models.passt import build_passt_embedding_model
 
@@ -57,6 +58,7 @@ DEFAULT_OUTPUT_ROOT = (
 DEFAULT_EMBEDDING_MODEL = "beats"
 EMBEDDING_SAMPLE_RATES = {
     "beats": 16000,
+    "m2d": 16000,
     "passt": 32000,
 }
 MAX_RANDOM_SEED = (2**32) - 1
@@ -175,6 +177,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Optional training checkpoint used to initialize model weights before "
             "starting a new training run."
         ),
+    )
+    parser.add_argument(
+        "--save-checkpoints",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable Lightning checkpoint saving during training.",
     )
 
     parser.add_argument(
@@ -371,6 +379,12 @@ def build_embedding_model(
         )
     if args.embedding_model == "passt":
         return build_passt_embedding_model(
+            checkpoint_dir=args.checkpoint_dir,
+            trust_checkpoint=args.trust_checkpoint,
+            sample_rate=sample_rate,
+        )
+    if args.embedding_model == "m2d":
+        return build_m2d_embedding_model(
             checkpoint_dir=args.checkpoint_dir,
             trust_checkpoint=args.trust_checkpoint,
             sample_rate=sample_rate,
@@ -1091,6 +1105,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "gradient_clip_val": args.gradient_clip_val,
             "accumulate_grad_batches": args.accumulate_grad_batches,
             "freeze_encoder": args.freeze_encoder,
+            "save_checkpoints": args.save_checkpoints,
             "precision": args.precision,
             "devices": args.devices,
             "accelerator": args.accelerator,
@@ -1119,31 +1134,35 @@ def run_experiment(args: argparse.Namespace) -> Path:
         logger.experiment.config.update(experiment_config, allow_val_change=True)
         logger.experiment.config.update({"seed": seed}, allow_val_change=True)
 
-    model_checkpoint = ModelCheckpoint(
-        dirpath=str(experiment_dir / "checkpoints"),
-        filename="epoch{epoch:02d}-step{step:06d}",
-        monitor="val/hierarchical_f1",
-        mode="max",
-        save_top_k=1,
-        save_last=True,
-    )
+    model_checkpoint = None
+    if args.save_checkpoints:
+        model_checkpoint = ModelCheckpoint(
+            dirpath=str(experiment_dir / "checkpoints"),
+            filename="epoch{epoch:02d}-step{step:06d}",
+            monitor="val/hierarchical_f1",
+            mode="max",
+            save_top_k=1,
+            save_last=True,
+        )
     early_stopping = EarlyStopping(
         monitor="val/hierarchical_f1",
         mode="max",
         patience=args.early_stopping_patience,
     )
+    callbacks = [
+        early_stopping,
+        LearningRateMonitor(logging_interval="step"),
+        progress_bar,
+    ]
+    if model_checkpoint is not None:
+        callbacks.insert(0, model_checkpoint)
     trainer = pl.Trainer(
         default_root_dir=str(experiment_dir),
         accelerator=args.accelerator,
         devices=parse_devices_argument(args.devices),
         max_epochs=args.max_epochs,
         logger=logger,
-        callbacks=[
-            model_checkpoint,
-            early_stopping,
-            LearningRateMonitor(logging_interval="step"),
-            progress_bar,
-        ],
+        callbacks=callbacks,
         gradient_clip_val=args.gradient_clip_val,
         accumulate_grad_batches=args.accumulate_grad_batches,
         precision=args.precision,
@@ -1154,7 +1173,9 @@ def run_experiment(args: argparse.Namespace) -> Path:
 
     datamodule = BSDDataModule()
     trainer.fit(lightning_module, datamodule=datamodule)
-    best_model_path = model_checkpoint.best_model_path or None
+    best_model_path = model_checkpoint.best_model_path if model_checkpoint is not None else None
+    if not best_model_path:
+        best_model_path = None
     test_results = trainer.test(
         model=lightning_module,
         datamodule=datamodule,
@@ -1194,7 +1215,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
         "best_model_path": best_model_path,
         "best_model_score": (
             float(model_checkpoint.best_model_score.item())
-            if model_checkpoint.best_model_score is not None
+            if model_checkpoint is not None and model_checkpoint.best_model_score is not None
             else None
         ),
         "test_results": test_results,
