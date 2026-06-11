@@ -3,7 +3,7 @@
   "input_file_id": "file-MPDjAafSFMB3AxPxzaeM43",
   "created_at": "2026-06-11T00:53:44",
   "endpoint": "/v1/responses",
-  "output_file_id": null,
+  "output_file_id": "file-SPrjfD1avXZ2WfjaiAhaje",
   "error_file_id": null,
-  "status": "validating"
+  "status": "completed"
 }

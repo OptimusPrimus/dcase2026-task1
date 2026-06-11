@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,22 @@ from torch.utils.data import ConcatDataset, Dataset
 
 DEFAULT_BSD35K_ROOT = Path.home() / "data" / "BSD35k-CS"
 DEFAULT_BSD10K_ROOT = Path.home() / "data" / "BSD10k"
+DEFAULT_BSD10K_METADATA_SUMMARIES_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "experiments"
+    / "outputs"
+    / "experiments"
+    / "20260610_234726_BSD10k_gpt-5.4-mini_2ffa7194"
+    / "predictions.jsonl"
+)
+DEFAULT_BSD10K_METADATA_CLASS_PROBABILITIES_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "experiments"
+    / "outputs"
+    / "experiments"
+    / "20260611_004827_BSD10k_gpt-5.4-mini_a2869640"
+    / "predictions.jsonl"
+)
 
 
 def load_audio_waveform(audio_path: str | Path) -> tuple[np.ndarray, int]:
@@ -68,6 +85,7 @@ class BSDDataset(Dataset[dict[str, Any]]):
 
         self._validate_layout()
         self.class_descriptions = self._load_description_index(self.spec.description_csv)
+        self.extra_metadata_by_index = self._load_extra_metadata_by_index()
         self.records = self._load_records()
 
     def _validate_layout(self) -> None:
@@ -91,6 +109,77 @@ class BSDDataset(Dataset[dict[str, Any]]):
             reader = csv.DictReader(handle)
             return list(reader)
 
+    @staticmethod
+    def _read_jsonl_rows(jsonl_path: Path) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        with jsonl_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                if isinstance(data, dict):
+                    rows.append(data)
+        return rows
+
+    @staticmethod
+    def _parse_json_string(value: Any) -> Any | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return None
+
+    def _load_extra_metadata_by_index(self) -> dict[int, dict[str, Any]]:
+        if self.spec.name != "BSD10k":
+            return {}
+
+        summary_by_index = self._load_bsd10k_summary_metadata()
+        class_probs_by_index = self._load_bsd10k_class_probability_metadata()
+
+        merged: dict[int, dict[str, Any]] = {}
+        for dataset_index in set(summary_by_index) | set(class_probs_by_index):
+            merged[dataset_index] = {
+                "metadata_summary": summary_by_index.get(dataset_index),
+                **class_probs_by_index.get(dataset_index, {}),
+            }
+        return merged
+
+    def _load_bsd10k_summary_metadata(self) -> dict[int, str | None]:
+        jsonl_path = DEFAULT_BSD10K_METADATA_SUMMARIES_PATH
+        if not jsonl_path.exists():
+            return {}
+
+        summary_by_index: dict[int, str | None] = {}
+        for row in self._read_jsonl_rows(jsonl_path):
+            dataset_index = row.get("dataset_index")
+            if isinstance(dataset_index, int):
+                raw_response = row.get("raw_response")
+                summary_by_index[dataset_index] = (
+                    raw_response if isinstance(raw_response, str) else None
+                )
+        return summary_by_index
+
+    def _load_bsd10k_class_probability_metadata(self) -> dict[int, dict[str, Any]]:
+        jsonl_path = DEFAULT_BSD10K_METADATA_CLASS_PROBABILITIES_PATH
+        if not jsonl_path.exists():
+            return {}
+
+        probabilities_by_index: dict[int, dict[str, Any]] = {}
+        for row in self._read_jsonl_rows(jsonl_path):
+            dataset_index = row.get("dataset_index")
+            if not isinstance(dataset_index, int):
+                continue
+            raw_response = row.get("raw_response")
+            probabilities_by_index[dataset_index] = {
+                "metadata_class_probabilities_raw": (
+                    raw_response if isinstance(raw_response, str) else None
+                ),
+                "metadata_class_probabilities": self._parse_json_string(raw_response),
+            }
+        return probabilities_by_index
+
     def _load_description_index(self, csv_path: Path) -> dict[int, dict[str, Any]]:
         rows = self._read_csv_rows(csv_path)
         descriptions: dict[int, dict[str, Any]] = {}
@@ -110,7 +199,7 @@ class BSDDataset(Dataset[dict[str, Any]]):
     def _load_records(self) -> list[dict[str, Any]]:
         rows = self._read_csv_rows(self.spec.metadata_csv)
         records: list[dict[str, Any]] = []
-        for row in rows:
+        for dataset_index, row in enumerate(rows):
             class_idx = int(row["class_idx"])
             sound_id = int(row["sound_id"])
             audio_path = self.spec.audio_dir / f"{sound_id}.wav"
@@ -121,7 +210,17 @@ class BSDDataset(Dataset[dict[str, Any]]):
                     f"in {self.spec.description_csv}"
                 )
 
+            extra_metadata = self.extra_metadata_by_index.get(dataset_index, {})
+            metadata_summary = extra_metadata.get("metadata_summary")
+            metadata_class_probabilities_raw = extra_metadata.get(
+                "metadata_class_probabilities_raw"
+            )
+            metadata_class_probabilities = extra_metadata.get(
+                "metadata_class_probabilities"
+            )
+
             record = {
+                "dataset_index": dataset_index,
                 "sound_id": sound_id,
                 "class": row["class"],
                 "class_idx": class_idx,
@@ -134,7 +233,11 @@ class BSDDataset(Dataset[dict[str, Any]]):
                 "description": row["description"],
                 "audio_path": str(audio_path),
                 "source_dataset": self.spec.name,
+                "metadata_summary": metadata_summary,
+                "metadata_class_probabilities_raw": metadata_class_probabilities_raw,
+                "metadata_class_probabilities": metadata_class_probabilities,
                 "metadata": {
+                    "dataset_index": dataset_index,
                     "sound_id": sound_id,
                     "class": row["class"],
                     "class_idx": class_idx,
@@ -145,6 +248,9 @@ class BSDDataset(Dataset[dict[str, Any]]):
                     "title": row["title"],
                     "tags": row["tags"],
                     "description": row["description"],
+                    "metadata_summary": metadata_summary,
+                    "metadata_class_probabilities_raw": metadata_class_probabilities_raw,
+                    "metadata_class_probabilities": metadata_class_probabilities,
                 },
                 "class_description": class_description,
                 "description_class_key": class_description["class_key"],

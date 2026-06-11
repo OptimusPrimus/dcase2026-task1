@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import torch
@@ -35,22 +36,47 @@ class BartMetadataDecoder(nn.Module):
             persistent=False,
         )
 
-    def _build_tag_texts(
+    @staticmethod
+    def _stringify_metadata_class_probabilities(item: dict[str, Any]) -> str:
+        raw_value = item.get("metadata_class_probabilities_raw")
+        if isinstance(raw_value, str) and raw_value.strip():
+            return raw_value
+
+        parsed_value = item.get("metadata_class_probabilities")
+        if parsed_value is None:
+            return ""
+        return json.dumps(parsed_value, ensure_ascii=True, separators=(",", ":"))
+
+    def _build_decoder_texts(
         self,
         metadata: list[dict[str, Any]] | None,
         batch_size: int,
     ) -> list[str]:
         if metadata is None:
             return [""] * batch_size
-        tag_texts: list[str] = []
+        decoder_texts: list[str] = []
         for item in metadata:
-            tags = item.get("tags", "") if item is not None else ""
-            tag_texts.append(str(" ".join(tags.split(","))))
-        if len(tag_texts) != batch_size:
+            if item is None:
+                decoder_texts.append("")
+                continue
+
+            summary = item.get("metadata_summary")
+            summary_text = summary.strip() if isinstance(summary, str) else ""
+            class_probabilities_text = self._stringify_metadata_class_probabilities(item)
+
+            parts = [part for part in [summary_text, class_probabilities_text] if part]
+            if not parts:
+                tags = item.get("tags", "")
+                if isinstance(tags, str) and tags.strip():
+                    parts.append(" ".join(tags.split(",")))
+
+            decoder_texts.append("\n".join(parts))
+
+        if len(decoder_texts) != batch_size:
             raise ValueError(
-                f"Expected metadata for {batch_size} items, got {len(tag_texts)}."
+                f"Expected metadata for {batch_size} items, got {len(decoder_texts)}."
             )
-        return tag_texts
+        return decoder_texts
 
     def forward(
         self,
@@ -59,9 +85,9 @@ class BartMetadataDecoder(nn.Module):
         metadata: list[dict[str, Any]] | None = None,
     ) -> torch.Tensor:
         batch_size = audio_embeddings.shape[0]
-        tag_texts = self._build_tag_texts(metadata, batch_size)
+        decoder_texts = self._build_decoder_texts(metadata, batch_size)
         tokenized = self._tokenizer(
-            tag_texts,
+            decoder_texts,
             padding=True,
             truncation=True,
             return_tensors="pt",
