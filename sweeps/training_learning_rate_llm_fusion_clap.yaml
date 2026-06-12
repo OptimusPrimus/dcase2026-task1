@@ -32,4 +32,5 @@ command:
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
   - --embedding-model=clap
+  - --use-llm-prior-embedding-fusion
   - ${args}
