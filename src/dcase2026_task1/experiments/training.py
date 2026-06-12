@@ -161,6 +161,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Add BSD35k-CS to the training split only.",
     )
     parser.add_argument(
+        "--only-bsd35k-cs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use BSD35k-CS as the training split only.",
+    )
+    parser.add_argument(
         "--embedding-model",
         default=DEFAULT_EMBEDDING_MODEL,
         help="Audio embedding backbone used by the training script.",
@@ -344,9 +350,15 @@ def build_id2label(label_specs: list[LabelSpec]) -> dict[int, str]:
 def create_experiment_dir(
     output_root: Path,
     include_bsd35k_cs: bool,
+    only_bsd35k_cs: bool,
     embedding_model: str,
 ) -> Path:
-    dataset_name = "BSD10k_plus_BSD35k-CS" if include_bsd35k_cs else "BSD10k"
+    if only_bsd35k_cs:
+        dataset_name = "BSD35k-CS_train_only"
+    elif include_bsd35k_cs:
+        dataset_name = "BSD10k_plus_BSD35k-CS"
+    else:
+        dataset_name = "BSD10k"
     experiment_id = (
         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{dataset_name}_{embedding_model}_{uuid4().hex[:8]}"
     )
@@ -767,6 +779,11 @@ def _get_progress_bar_callback(pl: Any) -> Any:
 
 
 def run_experiment(args: argparse.Namespace) -> Path:
+    if args.include_bsd35k_cs and args.only_bsd35k_cs:
+        raise ValueError(
+            "--include-bsd35k-cs and --only-bsd35k-cs cannot both be enabled."
+        )
+
     seed = resolve_seed(args.seed)
     args.seed = seed
 
@@ -778,6 +795,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
         bsd10k_root=dataset_roots["BSD10k"],
         bsd35k_root=dataset_roots["BSD35k-CS"],
         include_bsd35k_cs=args.include_bsd35k_cs,
+        only_bsd35k_cs=args.only_bsd35k_cs,
         fold=args.fold,
         n_splits=args.n_splits,
         validation_size=args.validation_size,
@@ -790,6 +808,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
     experiment_dir = create_experiment_dir(
         Path(args.output_root),
         args.include_bsd35k_cs,
+        args.only_bsd35k_cs,
         args.embedding_model,
     )
 
@@ -1047,8 +1066,9 @@ def run_experiment(args: argparse.Namespace) -> Path:
         lightning_module.load_state_dict(initial_state_dict)
 
     experiment_config = {
-        "dataset": "BSD10k",
+        "dataset": "BSD35k-CS" if args.only_bsd35k_cs else "BSD10k",
         "include_bsd35k_cs": args.include_bsd35k_cs,
+        "only_bsd35k_cs": args.only_bsd35k_cs,
         "dataset_roots": {name: str(path) for name, path in dataset_roots.items()},
         "embedding_model": args.embedding_model,
         "init_checkpoint_path": (
@@ -1197,7 +1217,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
         prediction_specs = [
             ("bsd2k_hidden_test_logits.npz", load_full_dataset_records("BSD2k", dataset_roots["BSD2k"])),
             ("bsd10k_logits.npz", load_full_dataset_records("BSD10k", dataset_roots["BSD10k"])),
-            # ("bsd35k_cs_logits.npz", load_full_dataset_records("BSD35k-CS", dataset_roots["BSD35k-CS"])),
+            ("bsd35k_cs_logits.npz", load_full_dataset_records("BSD35k-CS", dataset_roots["BSD35k-CS"])),
         ]
         for filename, records in prediction_specs:
             file_ids, logits = predict_logits_for_records(

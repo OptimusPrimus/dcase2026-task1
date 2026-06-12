@@ -84,14 +84,19 @@ def build_experiment_split(
     bsd10k_root: Path,
     bsd35k_root: Path | None,
     include_bsd35k_cs: bool,
+    only_bsd35k_cs: bool,
     fold: int,
     n_splits: int,
     validation_size: float,
 ) -> ExperimentSplit:
+    if include_bsd35k_cs and only_bsd35k_cs:
+        raise ValueError(
+            "include_bsd35k_cs and only_bsd35k_cs cannot both be enabled."
+        )
     clean_records = load_records_by_dataset_name("BSD10k", bsd10k_root)
     noisy_records = (
         load_records_by_dataset_name("BSD35k-CS", bsd35k_root)
-        if include_bsd35k_cs and bsd35k_root is not None
+        if (include_bsd35k_cs or only_bsd35k_cs) and bsd35k_root is not None
         else []
     )
 
@@ -105,15 +110,19 @@ def build_experiment_split(
         raise ValueError(f"fold must be in [0, {len(splits) - 1}], got {fold}.")
     fold_split = splits[fold]
 
-    train_records = [clean_records[index] for index in fold_split.train_indices]
-    train_records.extend(noisy_records)
+    clean_train_records = [clean_records[index] for index in fold_split.train_indices]
+    if only_bsd35k_cs:
+        train_records = list(noisy_records)
+    else:
+        train_records = list(clean_train_records)
+        train_records.extend(noisy_records)
     val_records = [clean_records[index] for index in fold_split.val_indices]
     test_records = [clean_records[index] for index in fold_split.test_indices]
     return ExperimentSplit(
         train_records=train_records,
         val_records=val_records,
         test_records=test_records,
-        clean_train_size=len(fold_split.train_indices),
+        clean_train_size=0 if only_bsd35k_cs else len(clean_train_records),
         noisy_train_size=len(noisy_records),
     )
 
@@ -122,6 +131,7 @@ def get_experiment_records(
     bsd10k_root: Path,
     bsd35k_root: Path | None,
     include_bsd35k_cs: bool,
+    only_bsd35k_cs: bool,
     fold: int,
     n_splits: int,
     validation_size: float,
@@ -130,6 +140,7 @@ def get_experiment_records(
         bsd10k_root=bsd10k_root,
         bsd35k_root=bsd35k_root,
         include_bsd35k_cs=include_bsd35k_cs,
+        only_bsd35k_cs=only_bsd35k_cs,
         fold=fold,
         n_splits=n_splits,
         validation_size=validation_size,
