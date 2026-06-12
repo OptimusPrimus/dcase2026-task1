@@ -709,6 +709,17 @@ def compute_hierarchical_metrics(
     y_true: list[str],
     y_pred: list[str],
 ) -> dict[str, float]:
+    def safe_mean(values: list[float]) -> float:
+        if not values:
+            return 0.0
+        return float(np.mean(values).item())
+
+    def safe_f1(precision: float, recall: float) -> float:
+        denominator = precision + recall
+        if denominator == 0.0:
+            return 0.0
+        return (2 * precision * recall) / denominator
+
     def partial_match(y_t: str, y_p: str, d: float = 0.75) -> float:
         if y_t == y_p:
             return 1.0
@@ -717,35 +728,36 @@ def compute_hierarchical_metrics(
         return 0.0
 
     class_hierarchical_precision = {
-        class_name: np.mean(
+        class_name: safe_mean(
             [
                 partial_match(target_class, predicted_class)
                 for target_class, predicted_class in zip(y_true, y_pred, strict=True)
                 if predicted_class == class_name
             ]
-        ).item() if class_name in y_pred else 0.0
+        )
         for class_name in set(y_true)
     }
     class_hierarchical_recall = {
-        class_name: np.mean(
+        class_name: safe_mean(
             [
                 partial_match(target_class, predicted_class)
                 for target_class, predicted_class in zip(y_true, y_pred, strict=True)
                 if target_class == class_name
             ]
-        ).item()
+        )
         for class_name in set(y_true)
     }
     class_hierarchical_f1 = {
-        class_name: (
-            2 * class_hierarchical_precision[class_name] * class_hierarchical_recall[class_name]
-        ) / (class_hierarchical_precision[class_name] + class_hierarchical_recall[class_name])
+        class_name: safe_f1(
+            class_hierarchical_precision[class_name],
+            class_hierarchical_recall[class_name],
+        )
         for class_name in set(y_true)
     }
     return {
-        "hierarchical_precision": np.mean(list(class_hierarchical_precision.values())).item(),
-        "hierarchical_recall": np.mean(list(class_hierarchical_recall.values())).item(),
-        "hierarchical_f1": np.mean(list(class_hierarchical_f1.values())).item(),
+        "hierarchical_precision": safe_mean(list(class_hierarchical_precision.values())),
+        "hierarchical_recall": safe_mean(list(class_hierarchical_recall.values())),
+        "hierarchical_f1": safe_mean(list(class_hierarchical_f1.values())),
     }
 
 
