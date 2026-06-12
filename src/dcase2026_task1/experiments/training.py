@@ -19,6 +19,7 @@ from dcase2026_task1.data.splits import (
 )
 from dcase2026_task1.models.M2D import build_m2d_embedding_model
 from dcase2026_task1.models.beats import build_beats_embedding_model
+from dcase2026_task1.models.clap import build_clap_embedding_model
 from dcase2026_task1.models.passt import build_passt_embedding_model
 
 import warnings
@@ -58,6 +59,7 @@ DEFAULT_OUTPUT_ROOT = (
 DEFAULT_EMBEDDING_MODEL = "beats"
 EMBEDDING_SAMPLE_RATES = {
     "beats": 16000,
+    "clap": 32000,
     "m2d": 16000,
     "passt": 32000,
 }
@@ -438,6 +440,12 @@ def build_embedding_model(
         )
     if args.embedding_model == "m2d":
         return build_m2d_embedding_model(
+            checkpoint_dir=args.checkpoint_dir,
+            trust_checkpoint=args.trust_checkpoint,
+            sample_rate=sample_rate,
+        )
+    if args.embedding_model == "clap":
+        return build_clap_embedding_model(
             checkpoint_dir=args.checkpoint_dir,
             trust_checkpoint=args.trust_checkpoint,
             sample_rate=sample_rate,

@@ -20,6 +20,9 @@ parameters:
     value: !!float 1e-7
   max_epochs:
     value: 30
+  batch-size:
+    value: 32
+
 
 command:
   - ${env}
@@ -28,5 +31,5 @@ command:
   - dcase2026_task1.experiments.training
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
-  - -decoder-model=bart
+  - --embedding-model=clap
   - ${args}

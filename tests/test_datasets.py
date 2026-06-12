@@ -137,9 +137,25 @@ def test_dataset_loads_class_probability_metadata(
         encoding="utf-8",
     )
 
+    summary_path = tmp_path / "summaries.jsonl"
+    summary_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"dataset_index": 0, "raw_response": "A short object sound."}),
+                json.dumps({"dataset_index": 1, "raw_response": "A second summary."}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
     monkeypatch.setattr(
         "dcase2026_task1.data.datasets.DEFAULT_METADATA_CLASS_PROBABILITIES_PATHS",
         {dataset_name: class_probs_path},
+    )
+    monkeypatch.setattr(
+        "dcase2026_task1.data.datasets.DEFAULT_METADATA_SUMMARY_PATHS",
+        {dataset_name: summary_path},
     )
 
     dataset = BSDDataset(root=dataset_root, dataset_name=dataset_name, load_audio=False)
@@ -157,11 +173,16 @@ def test_dataset_loads_class_probability_metadata(
         {"label": "fx-o", "probability": 0.8},
         {"label": "other", "probability": 0.2},
     ]
+    assert item0["metadata_summary_raw"] == "A short object sound."
+    assert item0["metadata_summary"] == "A short object sound."
+    assert item0["metadata"]["metadata_summary"] == "A short object sound."
 
     item1 = dataset[1]
     assert item1["dataset_index"] == 1
     assert item1["metadata_class_probabilities_raw"] == "not json"
     assert item1["metadata_class_probabilities"] is None
+    assert item1["metadata_summary_raw"] == "A second summary."
+    assert item1["metadata_summary"] == "A second summary."
 
 
 def test_dataset_without_class_probability_metadata_keeps_extra_metadata_empty(tmp_path: Path) -> None:
@@ -174,6 +195,8 @@ def test_dataset_without_class_probability_metadata_keeps_extra_metadata_empty(t
     assert item["dataset_index"] == 0
     assert item["metadata_class_probabilities_raw"] is None
     assert item["metadata_class_probabilities"] is None
+    assert item["metadata_summary_raw"] is None
+    assert item["metadata_summary"] is None
 
 
 def test_bsd2k_dataset_loads_reduced_metadata_schema(tmp_path: Path) -> None:

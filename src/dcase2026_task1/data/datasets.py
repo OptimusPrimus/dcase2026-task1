@@ -45,6 +45,39 @@ DEFAULT_METADATA_CLASS_PROBABILITIES_PATHS = {
     "BSD35k-CS": DEFAULT_BSD35K_METADATA_CLASS_PROBABILITIES_PATH,
 }
 
+DEFAULT_BSD10K_METADATA_SUMMARY_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "experiments"
+    / "outputs"
+    / "experiments"
+    / "20260610_234726_BSD10k_gpt-5.4-mini_2ffa7194"
+    / "predictions.jsonl"
+)
+
+DEFAULT_BSD2K_METADATA_SUMMARY_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "experiments"
+    / "outputs"
+    / "experiments"
+    / "20260612_015409_BSD2k_gpt-5.4-mini_3b304142"
+    / "predictions.jsonl"
+)
+
+DEFAULT_BSD35K_METADATA_SUMMARY_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "experiments"
+    / "outputs"
+    / "experiments"
+    / "20260612_021115_BSD35k-CS_gpt-5.4-mini_2f6af3c8"
+    / "predictions.jsonl"
+)
+
+DEFAULT_METADATA_SUMMARY_PATHS = {
+    "BSD10k": DEFAULT_BSD10K_METADATA_SUMMARY_PATH,
+    "BSD2k": DEFAULT_BSD2K_METADATA_SUMMARY_PATH,
+    "BSD35k-CS": DEFAULT_BSD35K_METADATA_SUMMARY_PATH,
+}
+
 
 def load_audio_waveform(audio_path: str | Path) -> tuple[np.ndarray, int]:
     try:
@@ -157,7 +190,20 @@ class BSDDataset(Dataset[dict[str, Any]]):
             return None
 
     def _load_extra_metadata_by_index(self) -> dict[int, dict[str, Any]]:
-        return self._load_class_probability_metadata()
+        extra_metadata_by_index = self._load_class_probability_metadata()
+        self._merge_extra_metadata_by_index(
+            extra_metadata_by_index,
+            self._load_summary_metadata(),
+        )
+        return extra_metadata_by_index
+
+    @staticmethod
+    def _merge_extra_metadata_by_index(
+        target: dict[int, dict[str, Any]],
+        source: dict[int, dict[str, Any]],
+    ) -> None:
+        for dataset_index, metadata in source.items():
+            target.setdefault(dataset_index, {}).update(metadata)
 
     def _load_class_probability_metadata(self) -> dict[int, dict[str, Any]]:
         jsonl_path = DEFAULT_METADATA_CLASS_PROBABILITIES_PATHS.get(self.spec.name)
@@ -177,6 +223,24 @@ class BSDDataset(Dataset[dict[str, Any]]):
                 "metadata_class_probabilities": self._parse_json_string(raw_response),
             }
         return probabilities_by_index
+
+    def _load_summary_metadata(self) -> dict[int, dict[str, Any]]:
+        jsonl_path = DEFAULT_METADATA_SUMMARY_PATHS.get(self.spec.name)
+        if jsonl_path is None or not jsonl_path.exists():
+            return {}
+
+        summaries_by_index: dict[int, dict[str, Any]] = {}
+        for row in self._read_jsonl_rows(jsonl_path):
+            dataset_index = row.get("dataset_index")
+            if not isinstance(dataset_index, int):
+                continue
+            raw_response = row.get("raw_response")
+            summary = raw_response if isinstance(raw_response, str) else None
+            summaries_by_index[dataset_index] = {
+                "metadata_summary_raw": summary,
+                "metadata_summary": summary,
+            }
+        return summaries_by_index
 
     def _load_description_index(self, csv_path: Path) -> dict[int, dict[str, Any]]:
         rows = self._read_csv_rows(csv_path)
@@ -213,6 +277,8 @@ class BSDDataset(Dataset[dict[str, Any]]):
             metadata_class_probabilities = extra_metadata.get(
                 "metadata_class_probabilities"
             )
+            metadata_summary_raw = extra_metadata.get("metadata_summary_raw")
+            metadata_summary = extra_metadata.get("metadata_summary")
 
             record = {
                 "dataset_index": dataset_index,
@@ -231,6 +297,8 @@ class BSDDataset(Dataset[dict[str, Any]]):
                 "source_dataset": self.spec.name,
                 "metadata_class_probabilities_raw": metadata_class_probabilities_raw,
                 "metadata_class_probabilities": metadata_class_probabilities,
+                "metadata_summary_raw": metadata_summary_raw,
+                "metadata_summary": metadata_summary,
                 "metadata": {
                     "dataset_index": dataset_index,
                     "anonymous_id": anonymous_id,
@@ -246,6 +314,8 @@ class BSDDataset(Dataset[dict[str, Any]]):
                     "description": row.get("description"),
                     "metadata_class_probabilities_raw": metadata_class_probabilities_raw,
                     "metadata_class_probabilities": metadata_class_probabilities,
+                    "metadata_summary_raw": metadata_summary_raw,
+                    "metadata_summary": metadata_summary,
                 },
                 "class_description": class_description,
                 "description_class_key": (
