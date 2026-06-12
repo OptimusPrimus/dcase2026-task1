@@ -8,9 +8,7 @@ metric:
 
 parameters:
   learning_rate:
-    distribution: log_uniform_values
-    min: !!float 2e-6
-    max: !!float 6e-6
+    value: !!float 3e-6
   label_smoothing:
     distribution: uniform_values
     min: !!float 0.0
