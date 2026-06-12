@@ -10,7 +10,7 @@ parameters:
   learning_rate:
     value: !!float 3e-6
   label_smoothing:
-    distribution: uniform_values
+    distribution: uniform
     min: !!float 0.0
     max: !!float 0.5
   weight_decay:
