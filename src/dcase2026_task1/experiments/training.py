@@ -712,7 +712,7 @@ def compute_hierarchical_metrics(
     def partial_match(y_t: str, y_p: str, d: float = 0.75) -> float:
         if y_t == y_p:
             return 1.0
-        if y_t.split("-")[0] == y_t.split("-")[0]:
+        if y_t.split("-")[0] == y_p.split("-")[0]:
             return d / 2
         return 0.0
 
