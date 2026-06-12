@@ -224,6 +224,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Label smoothing factor for cross-entropy loss.",
     )
     parser.add_argument(
+        "--use-class-frequency-loss",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use inverse-frequency class weights from the effective training split in "
+            "cross-entropy loss."
+        ),
+    )
+    parser.add_argument(
         "--use-llm-prior-embedding-fusion",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -307,6 +316,32 @@ def build_label_specs(records: list[dict[str, Any]]) -> list[LabelSpec]:
 
 def build_label_map(label_specs: list[LabelSpec]) -> dict[int, int]:
     return {spec.dataset_class_idx: spec.label_id for spec in label_specs}
+
+
+def build_class_frequency_loss_weights(
+    records: list[dict[str, Any]],
+    indices: list[int],
+    label_map: dict[int, int],
+) -> torch.Tensor:
+    num_labels = len(label_map)
+    if num_labels == 0:
+        return torch.zeros(0, dtype=torch.float32)
+
+    counts = torch.zeros(num_labels, dtype=torch.float32)
+    for index in indices:
+        record = records[index]
+        label_id = label_map[int(record["class_idx"])]
+        counts[label_id] += 1.0
+
+    if torch.any(counts <= 0):
+        missing = torch.nonzero(counts <= 0, as_tuple=False).flatten().tolist()
+        raise ValueError(
+            "Cannot build class-frequency loss weights with missing labels in the training set: "
+            f"{missing}."
+        )
+
+    total_count = float(counts.sum().item())
+    return total_count / (counts.numel() * counts)
 
 
 def epochs_to_update_steps(epochs: float | None, update_steps_per_epoch: int) -> int | None:
@@ -839,6 +874,13 @@ def run_experiment(args: argparse.Namespace) -> Path:
     train_dataset = WaveformClassificationDataset(train_records, train_indices, label_map, sample_rate)
     val_dataset = WaveformClassificationDataset(val_records, val_indices, label_map, sample_rate)
     test_dataset = WaveformClassificationDataset(test_records, test_indices, label_map, sample_rate)
+    class_frequency_loss_weights = None
+    if args.use_class_frequency_loss:
+        class_frequency_loss_weights = build_class_frequency_loss_weights(
+            train_records,
+            train_indices,
+            label_map,
+        )
     train_batches_per_epoch = max(1, math.ceil(len(train_dataset) / args.batch_size))
     update_steps_per_epoch = max(1, math.ceil(train_batches_per_epoch / args.accumulate_grad_batches))
     total_update_steps = max(1, update_steps_per_epoch * args.max_epochs)
@@ -886,6 +928,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     "min_learning_rate": args.min_learning_rate,
                     "weight_decay": args.weight_decay,
                     "label_smoothing": args.label_smoothing,
+                    "use_class_frequency_loss": args.use_class_frequency_loss,
                     "warmup_epochs": args.warmup_epochs,
                     "warmup_steps": warmup_steps,
                     "lr_decay_start_epoch": args.lr_decay_start_epoch,
@@ -927,7 +970,10 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 self.llm_class_embedding_bank = None
                 self.fusion_head = None
             self.classifier = torch.nn.Linear(classifier_input_dim, len(label_specs))
-            self.loss_fn = torch.nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+            self.loss_fn = torch.nn.CrossEntropyLoss(
+                weight=class_frequency_loss_weights,
+                label_smoothing=args.label_smoothing,
+            )
             self.validation_outputs: list[dict[str, Any]] = []
             self.test_outputs: list[dict[str, Any]] = []
 
