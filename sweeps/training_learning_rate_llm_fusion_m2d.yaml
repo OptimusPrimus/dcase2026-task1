@@ -9,7 +9,7 @@ parameters:
   learning_rate:
     distribution: log_uniform_values
     min: !!float 1e-6
-    max: !!float 1e-9
+    max: !!float 9e-6
   weight_decay:
     value: 0.0
   warmup_epochs:
