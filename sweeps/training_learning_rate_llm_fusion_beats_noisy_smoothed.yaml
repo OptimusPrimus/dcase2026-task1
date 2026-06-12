@@ -23,6 +23,8 @@ parameters:
     value: !!float 1e-7
   max_epochs:
     value: 30
+  batch-size:
+    value: 5
 
 
 command:
