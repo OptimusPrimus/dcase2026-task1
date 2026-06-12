@@ -108,7 +108,7 @@ class AudioRetrievalModel(pl.LightningModule):
             add_special_tokens=True,
             padding='max_length',
             return_tensors='pt',
-            max_length=32,
+            max_length=64,
             truncation=True
         )
 
