@@ -9,7 +9,9 @@ description = "Dataset utilities for DCASE 2026 Task 1 experiments."
 requires-python = ">=3.10"
 dependencies = [
   "accelerate>=1.0",
+  "einops>=0.8",
   "librosa>=0.10",
+  "nnAudio>=0.3.4",
   "numpy>=1.24",
   "openai>=1.0.0",
   "lightning==2.6.1",

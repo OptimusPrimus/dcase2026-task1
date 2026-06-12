@@ -8,13 +8,12 @@ import torch
 
 from dcase2026_task1.models.audio_wrappers import (
     ArbitraryLengthAudioWrapper,
-    pack_segment_outputs,
 )
 
 DEFAULT_CHECKPOINT_ARCHIVE_ALIAS = "m2d_clap_vit_base-80x1001p16x16-240128_AS-FT_enconly.zip"
 DEFAULT_CHECKPOINT_FILENAME = "weights_ep67it3124-0.48558.pth"
 DEFAULT_SAMPLE_RATE = 16000
-DEFAULT_MAX_AUDIO_SECONDS = 10.01
+DEFAULT_MAX_AUDIO_SECONDS = 10.0
 _STAGING_ROOT = Path("/tmp/dcase2026_task1_m2d")
 
 
@@ -119,9 +118,86 @@ def _extract_m2d_embeddings(
     waveforms: torch.Tensor,
     padding_mask: torch.Tensor | None = None,
     metadata: list[dict[str, object]] | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    del metadata
+    embeddings = model.encode(waveforms)
+    token_padding_mask = _build_m2d_token_padding_mask(
+        model=model,
+        padding_mask=padding_mask,
+        batch_size=waveforms.shape[0],
+        sequence_length=embeddings.shape[1],
+        device=embeddings.device,
+    )
+    return embeddings, token_padding_mask
+
+
+def _build_m2d_token_padding_mask(
+    *,
+    model: torch.nn.Module,
+    padding_mask: torch.Tensor | None,
+    batch_size: int,
+    sequence_length: int,
+    device: torch.device,
 ) -> torch.Tensor:
-    del padding_mask, metadata
-    return model.encode(waveforms)
+    if padding_mask is None:
+        return torch.zeros((batch_size, sequence_length), dtype=torch.bool, device=device)
+
+    token_padding_mask = torch.ones((batch_size, sequence_length), dtype=torch.bool, device=device)
+    hop_size = int(model.cfg.hop_size)
+    patch_frames = int(model.backbone.patch_size()[1])
+    max_input_frames = int(model.cfg.input_size[1])
+
+    for batch_index in range(batch_size):
+        valid_length = int((~padding_mask[batch_index]).sum().item())
+        if valid_length <= 0:
+            valid_token_count = 1
+        else:
+            valid_mel_frames = min(max_input_frames, 1 + (valid_length // hop_size))
+            valid_token_count = min(
+                sequence_length,
+                max(1, (valid_mel_frames + patch_frames - 1) // patch_frames),
+            )
+        token_padding_mask[batch_index, :valid_token_count] = False
+
+    return token_padding_mask
+
+
+def _concatenate_segment_outputs(
+    segment_outputs: tuple[torch.Tensor, torch.Tensor],
+    segment_batch_indices: torch.Tensor,
+    batch_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    segment_embeddings, segment_padding_masks = segment_outputs
+    feature_dim = segment_embeddings.shape[-1]
+    per_batch_embeddings: list[list[torch.Tensor]] = [[] for _ in range(batch_size)]
+    per_batch_masks: list[list[torch.Tensor]] = [[] for _ in range(batch_size)]
+
+    for segment_index, batch_index in enumerate(segment_batch_indices.tolist()):
+        per_batch_embeddings[batch_index].append(segment_embeddings[segment_index])
+        per_batch_masks[batch_index].append(segment_padding_masks[segment_index])
+
+    concatenated_embeddings: list[torch.Tensor] = []
+    concatenated_masks: list[torch.Tensor] = []
+    max_sequence_length = 1
+    for batch_index in range(batch_size):
+        if per_batch_embeddings[batch_index]:
+            batch_embeddings = torch.cat(per_batch_embeddings[batch_index], dim=0)
+            batch_mask = torch.cat(per_batch_masks[batch_index], dim=0)
+        else:
+            batch_embeddings = segment_embeddings.new_zeros((1, feature_dim))
+            batch_mask = torch.ones((1,), dtype=torch.bool, device=segment_padding_masks.device)
+        concatenated_embeddings.append(batch_embeddings)
+        concatenated_masks.append(batch_mask)
+        max_sequence_length = max(max_sequence_length, int(batch_embeddings.shape[0]))
+
+    packed_embeddings = segment_embeddings.new_zeros((batch_size, max_sequence_length, feature_dim))
+    packed_masks = torch.ones((batch_size, max_sequence_length), dtype=torch.bool, device=segment_padding_masks.device)
+    for batch_index, (batch_embeddings, batch_mask) in enumerate(zip(concatenated_embeddings, concatenated_masks, strict=False)):
+        sequence_length = batch_embeddings.shape[0]
+        packed_embeddings[batch_index, :sequence_length] = batch_embeddings
+        packed_masks[batch_index, :sequence_length] = batch_mask
+
+    return packed_embeddings, packed_masks
 
 
 class ChunkedM2D(ArbitraryLengthAudioWrapper):
@@ -137,7 +213,7 @@ class ChunkedM2D(ArbitraryLengthAudioWrapper):
             sample_rate=sample_rate,
             max_audio_seconds=max_audio_seconds,
             segment_forward=_extract_m2d_embeddings,
-            aggregate_outputs=pack_segment_outputs,
+            aggregate_outputs=_concatenate_segment_outputs,
         )
 
 

@@ -15,6 +15,7 @@ from tqdm import tqdm
 from dcase2026_task1.data.datasets import (
     DEFAULT_BSD10K_ROOT,
     DEFAULT_BSD35K_ROOT,
+    DEFAULT_BSD2K_ROOT,
     BSDDataset,
 )
 
@@ -63,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Generate metadata summaries with OpenAI batch jobs and resumable outputs."
     )
     parser.add_argument("action", choices=["submit", "status", "download"], nargs="?", default="submit")
-    parser.add_argument("--dataset", choices=["BSD10k", "BSD35k-CS"], default="BSD10k")
+    parser.add_argument("--dataset", choices=["BSD10k", "BSD2k", "BSD35k-CS"], default="BSD10k")
     parser.add_argument("--dataset-root", default=None)
     parser.add_argument("--experiment-dir", default=None)
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
@@ -84,6 +85,8 @@ def resolve_dataset_root(dataset_name: str, explicit_root: str | None) -> Path:
         return Path(explicit_root)
     if dataset_name == "BSD10k":
         return DEFAULT_BSD10K_ROOT
+    elif dataset_name == "BSD2k":
+        return DEFAULT_BSD2K_ROOT
     return DEFAULT_BSD35K_ROOT
 
 
@@ -215,7 +218,7 @@ def prepare_input_rows(args: argparse.Namespace, experiment_dir: Path) -> tuple[
                 "title": item.get("title", ""),
                 "tags": item.get("tags", ""),
                 "description": item.get("description", ""),
-                "target_class_idx": int(item["class_idx"]),
+                "target_class_idx": int(item.get("class_idx") or -1),
                 "target_class": item["class"],
                 "prompt": prompt,
             }
