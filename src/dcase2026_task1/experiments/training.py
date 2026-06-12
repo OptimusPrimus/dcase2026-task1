@@ -218,6 +218,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", "--weight_decay", type=float, default=0.01)
     parser.add_argument("--head-dropout", type=float, default=0.1)
     parser.add_argument(
+        "--label-smoothing", "--label_smoothing",
+        type=float,
+        default=0.0,
+        help="Label smoothing factor for cross-entropy loss.",
+    )
+    parser.add_argument(
         "--use-llm-prior-embedding-fusion",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -867,6 +873,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     "learning_rate": args.learning_rate,
                     "min_learning_rate": args.min_learning_rate,
                     "weight_decay": args.weight_decay,
+                    "label_smoothing": args.label_smoothing,
                     "warmup_epochs": args.warmup_epochs,
                     "warmup_steps": warmup_steps,
                     "lr_decay_start_epoch": args.lr_decay_start_epoch,
@@ -908,7 +915,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 self.llm_class_embedding_bank = None
                 self.fusion_head = None
             self.classifier = torch.nn.Linear(classifier_input_dim, len(label_specs))
-            self.loss_fn = torch.nn.CrossEntropyLoss()
+            self.loss_fn = torch.nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
             self.validation_outputs: list[dict[str, Any]] = []
             self.test_outputs: list[dict[str, Any]] = []
 
@@ -1112,6 +1119,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "learning_rate": args.learning_rate,
             "weight_decay": args.weight_decay,
             "head_dropout": args.head_dropout,
+            "label_smoothing": args.label_smoothing,
             "max_epochs": args.max_epochs,
             "early_stopping_patience": args.early_stopping_patience,
             "warmup_epochs": args.warmup_epochs,
