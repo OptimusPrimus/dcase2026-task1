@@ -11,7 +11,7 @@ from dcase2026_task1.models.audio_wrappers import (
     pack_segment_outputs,
 )
 
-from .passt import checkpoint_filter_fn, passt_s_swa_p16_128_ap476, passt_s_kd_p16_128_ap486, passt_s_swa_p16_s16_128_ap473
+from .passt import checkpoint_filter_fn, passt_s_swa_p16_128_ap476, passt_s_kd_p16_128_ap486, passt_s_swa_p16_s16_128_ap473, passt_s_p16_s16_128_ap468
 
 DEFAULT_CHECKPOINT_ALIAS = "passt_s_swa_p16_s16_128_ap473"
 DEFAULT_SAMPLE_RATE = 32000
@@ -185,7 +185,7 @@ def build_passt_embedding_model(
 #        checkpoint_alias=checkpoint_alias,
 #        trust_checkpoint=trust_checkpoint,
 #    )
-    passt_model = passt_s_swa_p16_s16_128_ap473(
+    passt_model = passt_s_p16_s16_128_ap468(
         pretrained=True,
         num_classes=DEFAULT_NUM_CLASSES,
         in_chans=1,
