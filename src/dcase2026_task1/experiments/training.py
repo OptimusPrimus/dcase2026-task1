@@ -1236,7 +1236,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             monitor="val/hierarchical_f1",
             mode="max",
             save_top_k=1,
-            save_last=True,
+            save_last=False
         )
     early_stopping = EarlyStopping(
         monitor="val/hierarchical_f1",

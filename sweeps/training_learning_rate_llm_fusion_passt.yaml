@@ -1,6 +1,7 @@
 program: src/dcase2026_task1/experiments/training.py
 project: dcase2026-task1
-method: bayes
+method: random
+run_cap: 20
 metric:
   name: val/hierarchical_f1
   goal: maximize
@@ -8,8 +9,8 @@ metric:
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: !!float 5e-6
-    max: !!float 5e-5
+    min: !!float 3e-6
+    max: !!float 5e-6
   weight_decay:
     value: 0.0
   warmup_epochs:
@@ -19,7 +20,7 @@ parameters:
   min_learning_rate:
     value: !!float 1e-7
   max_epochs:
-    value: 30
+    value: 10
 
 
 command:
@@ -30,5 +31,8 @@ command:
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
   - --use-llm-prior-embedding-fusion
+  - --use-class-frequency-loss
   - --embedding-model=passt
+  - --batch-size=18
+  - --save-checkpoints
   - ${args}
