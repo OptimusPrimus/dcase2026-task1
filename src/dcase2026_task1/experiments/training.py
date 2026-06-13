@@ -73,6 +73,33 @@ class LabelSpec:
     class_name: str
 
 
+@dataclass(frozen=True)
+class LLMPriorNoiseConfig:
+    p_swap: float = 0.0
+    p_drop: float = 0.0
+    p_add: float = 0.0
+    p_move: float = 0.0
+    move_fraction: float = 0.1
+
+    def __post_init__(self) -> None:
+        for name in ("p_swap", "p_drop", "p_add", "p_move"):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be between 0.0 and 1.0, got {value}.")
+        if not 0.0 < self.move_fraction <= 1.0:
+            raise ValueError(
+                "move_fraction must be greater than 0.0 and at most 1.0, "
+                f"got {self.move_fraction}."
+            )
+
+    @property
+    def enabled(self) -> bool:
+        return any(
+            probability > 0.0
+            for probability in (self.p_swap, self.p_drop, self.p_add, self.p_move)
+        )
+
+
 class AudioEmbeddingModel(Protocol):
     output_dim: int
 
@@ -241,6 +268,53 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Fuse pooled audio embeddings with a learnable class-embedding mixture built "
             "from metadata_class_probabilities."
+        ),
+    )
+    parser.add_argument(
+        "--llm-prior-noise-p-swap",
+        "--llm_prior_noise_p_swap",
+        type=float,
+        default=0.0,
+        help=(
+            "Training-only probability of swapping two predicted LLM prior event "
+            "probabilities when more than two events are predicted."
+        ),
+    )
+    parser.add_argument(
+        "--llm-prior-noise-p-drop",
+        "--llm_prior_noise_p_drop",
+        type=float,
+        default=0.0,
+        help=(
+            "Training-only probability of dropping one predicted LLM prior event "
+            "when more than two events are predicted."
+        ),
+    )
+    parser.add_argument(
+        "--llm-prior-noise-p-add",
+        "--llm_prior_noise_p_add",
+        type=float,
+        default=0.0,
+        help="Training-only probability of adding one previously unpredicted LLM prior event.",
+    )
+    parser.add_argument(
+        "--llm-prior-noise-p-move",
+        "--llm_prior_noise_p_move",
+        type=float,
+        default=0.0,
+        help=(
+            "Training-only probability of moving probability mass from one predicted "
+            "LLM prior event to another."
+        ),
+    )
+    parser.add_argument(
+        "--llm-prior-noise-move-fraction",
+        "--llm_prior_noise_move_fraction",
+        type=float,
+        default=0.1,
+        help=(
+            "Fraction of the source predicted-event probability moved when "
+            "--llm-prior-noise-p-move triggers. Use 0.05 for five percent."
         ),
     )
     parser.add_argument("--max-epochs", "--max_epochs", type=int, default=10)
@@ -671,6 +745,53 @@ def build_label2id(id2label: dict[int, str]) -> dict[str, int]:
     return {label: label_id for label_id, label in id2label.items()}
 
 
+def apply_llm_label_prior_noise(
+    prior: np.ndarray,
+    noise_config: LLMPriorNoiseConfig | None,
+    *,
+    rng: random.Random | None = None,
+) -> np.ndarray:
+    if noise_config is None or not noise_config.enabled:
+        return prior
+
+    rng = rng or random
+    noisy_prior = prior.astype(np.float64, copy=True)
+    all_label_ids = list(range(noisy_prior.shape[0]))
+
+    def active_label_ids() -> list[int]:
+        return [label_id for label_id, value in enumerate(noisy_prior) if value > 0.0]
+
+    active_ids = active_label_ids()
+    if len(active_ids) > 2 and rng.random() < noise_config.p_swap:
+        first_label_id, second_label_id = rng.sample(active_ids, 2)
+        noisy_prior[first_label_id], noisy_prior[second_label_id] = (
+            noisy_prior[second_label_id],
+            noisy_prior[first_label_id],
+        )
+
+    active_ids = active_label_ids()
+    if len(active_ids) > 2 and rng.random() < noise_config.p_drop:
+        noisy_prior[rng.choice(active_ids)] = 0.0
+
+    active_ids = active_label_ids()
+    inactive_ids = [label_id for label_id in all_label_ids if noisy_prior[label_id] <= 0.0]
+    if active_ids and inactive_ids and rng.random() < noise_config.p_add:
+        added_probability = float(np.mean(noisy_prior[active_ids]).item())
+        noisy_prior[rng.choice(inactive_ids)] = added_probability
+
+    active_ids = active_label_ids()
+    if len(active_ids) >= 2 and rng.random() < noise_config.p_move:
+        source_label_id, target_label_id = rng.sample(active_ids, 2)
+        moved_probability = noisy_prior[source_label_id] * noise_config.move_fraction
+        noisy_prior[source_label_id] -= moved_probability
+        noisy_prior[target_label_id] += moved_probability
+
+    prior_sum = noisy_prior.sum()
+    if prior_sum <= 0.0:
+        return prior
+    return noisy_prior / prior_sum
+
+
 def extract_llm_label_prior(
     metadata_item: dict[str, Any] | None,
     label2id: dict[str, int],
@@ -719,6 +840,8 @@ def build_llm_prior_weights(
     *,
     device: torch.device | None = None,
     dtype: torch.dtype | None = None,
+    noise_config: LLMPriorNoiseConfig | None = None,
+    rng: random.Random | None = None,
 ) -> torch.Tensor:
     label2id = build_label2id(id2label)
     num_labels = len(id2label)
@@ -730,6 +853,7 @@ def build_llm_prior_weights(
         _, prior = extract_llm_label_prior(metadata_item, label2id)
         if prior is None:
             continue
+        prior = apply_llm_label_prior_noise(prior, noise_config, rng=rng)
         weights[row_index] = torch.as_tensor(prior, device=device, dtype=weights.dtype)
     return weights
 
@@ -845,6 +969,13 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "--include-bsd35k-cs and --only-bsd35k-cs cannot both be enabled."
         )
 
+    llm_prior_noise_config = LLMPriorNoiseConfig(
+        p_swap=args.llm_prior_noise_p_swap,
+        p_drop=args.llm_prior_noise_p_drop,
+        p_add=args.llm_prior_noise_p_add,
+        p_move=args.llm_prior_noise_p_move,
+        move_fraction=args.llm_prior_noise_move_fraction,
+    )
     seed = resolve_seed(args.seed)
     args.seed = seed
 
@@ -946,6 +1077,11 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     "num_labels": len(label_specs),
                     "freeze_encoder": args.freeze_encoder,
                     "use_llm_prior_embedding_fusion": args.use_llm_prior_embedding_fusion,
+                    "llm_prior_noise_p_swap": llm_prior_noise_config.p_swap,
+                    "llm_prior_noise_p_drop": llm_prior_noise_config.p_drop,
+                    "llm_prior_noise_p_add": llm_prior_noise_config.p_add,
+                    "llm_prior_noise_p_move": llm_prior_noise_config.p_move,
+                    "llm_prior_noise_move_fraction": llm_prior_noise_config.move_fraction,
                 }
             )
 
@@ -961,6 +1097,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
 
             self.dropout = torch.nn.Dropout(args.head_dropout)
             self.use_llm_prior_embedding_fusion = args.use_llm_prior_embedding_fusion
+            self.llm_prior_noise_config = llm_prior_noise_config
             if self.use_llm_prior_embedding_fusion:
                 fusion_input_dim = self.embedding_model.output_dim * 2
                 classifier_input_dim = self.embedding_model.output_dim
@@ -990,6 +1127,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             waveforms: Any,
             padding_mask: Any,
             metadata: list[dict[str, Any]] | None = None,
+            llm_prior_noise_config: LLMPriorNoiseConfig | None = None,
         ) -> Any:
             embedding_sequence, embedding_padding_mask = self.embedding_model(
                 waveforms,
@@ -1006,6 +1144,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     id2label=id2label,
                     device=audio_features.device,
                     dtype=audio_features.dtype,
+                    noise_config=llm_prior_noise_config,
                 )
                 llm_features = llm_prior_weights @ self.llm_class_embedding_bank.weight
                 fused_features = torch.cat([audio_features, llm_features], dim=-1)
@@ -1044,7 +1183,12 @@ def run_experiment(args: argparse.Namespace) -> Path:
             )
 
         def training_step(self, batch: dict[str, Any], batch_idx: int) -> Any:
-            logits = self(batch["waveforms"], batch["padding_mask"], metadata=batch["metadata"])
+            logits = self(
+                batch["waveforms"],
+                batch["padding_mask"],
+                metadata=batch["metadata"],
+                llm_prior_noise_config=self.llm_prior_noise_config,
+            )
             loss = self.loss_fn(logits, batch["labels"])
             accuracy = (logits.argmax(dim=-1) == batch["labels"]).float().mean()
             self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch["labels"].size(0))
@@ -1199,6 +1343,13 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "gradient_clip_val": args.gradient_clip_val,
             "accumulate_grad_batches": args.accumulate_grad_batches,
             "freeze_encoder": args.freeze_encoder,
+            "llm_prior_noise": {
+                "p_swap": llm_prior_noise_config.p_swap,
+                "p_drop": llm_prior_noise_config.p_drop,
+                "p_add": llm_prior_noise_config.p_add,
+                "p_move": llm_prior_noise_config.p_move,
+                "move_fraction": llm_prior_noise_config.move_fraction,
+            },
             "save_checkpoints": args.save_checkpoints,
             "precision": args.precision,
             "devices": args.devices,
