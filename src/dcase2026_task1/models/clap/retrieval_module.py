@@ -89,7 +89,7 @@ class AudioRetrievalModel(pl.LightningModule):
 
         audio_embeddings = torch.stack(aggregated)
         audio_embeddings = self.audio_projection(audio_embeddings) # project to same dimension
-        audio_embeddings = torch.nn.functional.normalize(audio_embeddings, p=2, dim=-1) # normalize
+        # audio_embeddings = torch.nn.functional.normalize(audio_embeddings, p=2, dim=-1) # normalize
         return audio_embeddings
 
     def forward_text(self, batch):
@@ -121,7 +121,7 @@ class AudioRetrievalModel(pl.LightningModule):
         # project
         sentence_features = self.text_projection(sentence_features)
         # normalize
-        sentence_features = torch.nn.functional.normalize(sentence_features, p=2, dim=-1)
+        # sentence_features = torch.nn.functional.normalize(sentence_features, p=2, dim=-1)
 
         return sentence_features
 
