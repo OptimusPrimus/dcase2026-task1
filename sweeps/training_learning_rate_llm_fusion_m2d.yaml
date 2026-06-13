@@ -12,15 +12,15 @@ parameters:
     min: !!float 3e-6
     max: !!float 5e-6
   weight_decay:
-    value: 0.0
+    value: 0.01
   warmup_epochs:
     value: 1
   lr_decay_start_epoch:
-    value: 2
+    value: 1
   min_learning_rate:
     value: !!float 1e-7
   max_epochs:
-    value: 10
+    value: 20
 
 
 command:

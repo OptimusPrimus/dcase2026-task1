@@ -9,18 +9,18 @@ metric:
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: !!float 3e-6
-    max: !!float 5e-6
+    min: !!float 5e-6
+    max: !!float 1e-5
   weight_decay:
-    value: 0.0
+    value: 0.01
   warmup_epochs:
     value: 1
   lr_decay_start_epoch:
-    value: 2
+    value: 1
   min_learning_rate:
     value: !!float 1e-7
   max_epochs:
-    value: 10
+    value: 30
 
 
 command:
