@@ -277,12 +277,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--pseudo-label-dir",
+        "--pseudo-label-dir", "--pseudo_label_dir",
         default=None,
         help="Training run or ensemble directory containing pseudo labels.",
     )
     parser.add_argument(
-        "--pseudo-label-weight",
+        "--pseudo-label-weight", "--pseudo_label_weight",
         type=float,
         default=0.0,
         help="Weight for the pseudo-label loss term.",

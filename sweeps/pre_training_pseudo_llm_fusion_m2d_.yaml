@@ -1,0 +1,41 @@
+program: src/dcase2026_task1/experiments/training.py
+project: dcase2026-task1
+method: random
+run_cap: 20
+metric:
+  name: val/hierarchical_f1
+  goal: maximize
+
+parameters:
+  learning_rate:
+    value: !!float 1.5e-6
+  weight_decay:
+    value: 0.0
+  pseudo_label_weight:
+    distribution: uniform
+    min: 0.0
+    max: 1.0
+  warmup_epochs:
+    value: 1
+  lr_decay_start_epoch:
+    value: 2
+  min_learning_rate:
+    value: !!float 1e-7
+  max_epochs:
+    value: 30
+
+
+command:
+  - ${env}
+  - ${interpreter}
+  - -m
+  - dcase2026_task1.experiments.training
+  - --wandb-project=dcase2026-task1
+  - --wandb-mode=online
+  - --use-llm-prior-embedding-fusion
+  - --use-class-frequency-loss
+  - --embedding-model=m2d
+  - --batch-size=18
+  - --save-checkpoints
+  - --pseudo-label-dir=ensemble_20260613_140743_BSD10k_beats_b958ff06__20260613_145533_BSD10k_m2d_fef98c63__20260613_160638_BSD10k_clap_6dd7f8b4__20260613_160721_BSD10k_clap_4d86ad60
+  - ${args}
