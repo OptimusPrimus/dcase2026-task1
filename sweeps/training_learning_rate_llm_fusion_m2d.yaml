@@ -20,7 +20,7 @@ parameters:
   min_learning_rate:
     value: !!float 1e-7
   max_epochs:
-    value: 20
+    value: 30
 
 
 command:
