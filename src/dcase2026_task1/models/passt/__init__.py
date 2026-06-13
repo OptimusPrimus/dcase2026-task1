@@ -192,7 +192,7 @@ def build_passt_embedding_model(
         img_size=(DEFAULT_NUM_MEL_BINS, DEFAULT_INPUT_TDIM),
         stride=(16, 16),
         u_patchout=0,
-        s_patchout_t=15,
+        s_patchout_t=16,
         s_patchout_f=2,
     )
     #state_dict = checkpoint_filter_fn(_extract_state_dict(checkpoint), passt_model)
