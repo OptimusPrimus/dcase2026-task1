@@ -224,8 +224,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--init-checkpoint-path",
         default=None,
         help=(
-            "Optional training checkpoint used to initialize model weights before "
-            "starting a new training run."
+            "Optional training run name under --output-root, run directory, or checkpoint "
+            "file used to initialize model weights before starting a new training run."
         ),
     )
     parser.add_argument(
@@ -517,6 +517,74 @@ def resolve_pseudo_label_dir(pseudo_label_dir: str | None, output_root: str | Pa
     if path.exists():
         return path
     return Path(output_root).expanduser() / path
+
+
+def resolve_checkpoint_path(checkpoint_dir: str | Path, checkpoint_alias: str) -> Path:
+    from dcase2026_task1.models.beats import resolve_checkpoint_path as resolve_beats_checkpoint_path
+
+    return resolve_beats_checkpoint_path(
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_alias=checkpoint_alias,
+    )
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError(f"{path} must contain a JSON object.")
+    return payload
+
+
+def resolve_initial_checkpoint_path(
+    init_checkpoint_path: str | Path,
+    output_root: str | Path,
+) -> Path:
+    path = Path(init_checkpoint_path).expanduser()
+    candidates = [path]
+    if not path.is_absolute():
+        candidates.append(Path(output_root).expanduser() / path)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+        if candidate.is_dir():
+            return resolve_training_run_checkpoint_path(candidate)
+
+    searched = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(
+        f"Initial checkpoint {str(init_checkpoint_path)!r} was not found as a checkpoint file "
+        f"or training run directory. Searched: {searched}."
+    )
+
+
+def resolve_training_run_checkpoint_path(run_dir: str | Path) -> Path:
+    resolved_run_dir = Path(run_dir).expanduser().resolve()
+    summary_path = resolved_run_dir / "summary.json"
+    if summary_path.exists():
+        summary = read_json(summary_path)
+        best_model_path = summary.get("best_model_path")
+        if isinstance(best_model_path, str) and best_model_path:
+            checkpoint_path = Path(best_model_path).expanduser()
+            if not checkpoint_path.is_absolute():
+                checkpoint_path = resolved_run_dir / checkpoint_path
+            if checkpoint_path.is_file():
+                return checkpoint_path.resolve()
+            raise FileNotFoundError(
+                f"Best checkpoint from {summary_path} does not exist: {checkpoint_path}."
+            )
+
+    checkpoint_paths = sorted((resolved_run_dir / "checkpoints").glob("*.ckpt"))
+    if len(checkpoint_paths) == 1:
+        return checkpoint_paths[0].resolve()
+    if not checkpoint_paths:
+        raise FileNotFoundError(
+            f"No initial checkpoint found for training run {resolved_run_dir}. "
+            "Expected summary.json with best_model_path or one .ckpt file under checkpoints/."
+        )
+    raise ValueError(
+        f"Training run {resolved_run_dir} contains multiple checkpoint files and no "
+        "summary.json best_model_path to choose from."
+    )
 
 
 def maybe_limit(indices: list[int], limit: int | None) -> list[int]:
@@ -1460,9 +1528,15 @@ def run_experiment(args: argparse.Namespace) -> Path:
     np.random.seed(seed)
     random.seed(seed)
 
+    initial_checkpoint_path = (
+        resolve_initial_checkpoint_path(args.init_checkpoint_path, args.output_root)
+        if args.init_checkpoint_path is not None
+        else None
+    )
+
     lightning_module = ClassificationLightningModule()
-    if args.init_checkpoint_path is not None:
-        initial_state_dict = load_initial_training_state_dict(args.init_checkpoint_path)
+    if initial_checkpoint_path is not None:
+        initial_state_dict = load_initial_training_state_dict(initial_checkpoint_path)
         lightning_module.load_state_dict(initial_state_dict)
 
     experiment_config = {
@@ -1472,9 +1546,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
         "dataset_roots": {name: str(path) for name, path in dataset_roots.items()},
         "embedding_model": args.embedding_model,
         "init_checkpoint_path": (
-            str(Path(args.init_checkpoint_path).expanduser().resolve())
-            if args.init_checkpoint_path is not None
-            else None
+            str(initial_checkpoint_path) if initial_checkpoint_path is not None else None
         ),
         "checkpoint_dir": str(Path(args.checkpoint_dir).expanduser().resolve()),
         "trust_checkpoint": args.trust_checkpoint,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import json
 from pathlib import Path
 import random
 from types import SimpleNamespace
@@ -44,6 +45,8 @@ from dcase2026_task1.experiments.training import (
     load_pseudo_labels,
     resolve_pseudo_label_dir,
     resolve_checkpoint_path,
+    resolve_initial_checkpoint_path,
+    resolve_training_run_checkpoint_path,
     resolve_embedding_sample_rate,
     resolve_record_file_id,
     resolve_dataset_roots,
@@ -163,6 +166,31 @@ def test_resolve_pseudo_label_dir_keeps_existing_path(tmp_path: Path) -> None:
     pseudo_label_dir.mkdir()
 
     assert resolve_pseudo_label_dir(str(pseudo_label_dir), tmp_path / "outputs") == pseudo_label_dir
+
+
+def test_resolve_initial_checkpoint_path_uses_output_root_for_run_name(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "outputs" / "model_a" / "checkpoints" / "best.ckpt"
+    checkpoint_path.parent.mkdir(parents=True)
+    checkpoint_path.write_bytes(b"checkpoint")
+
+    resolved = resolve_initial_checkpoint_path("model_a", tmp_path / "outputs")
+
+    assert resolved == checkpoint_path.resolve()
+
+
+def test_resolve_training_run_checkpoint_path_uses_summary_best_model_path(tmp_path: Path) -> None:
+    run_dir = tmp_path / "model_a"
+    checkpoint_path = run_dir / "checkpoints" / "epoch.ckpt"
+    checkpoint_path.parent.mkdir(parents=True)
+    checkpoint_path.write_bytes(b"checkpoint")
+    (run_dir / "summary.json").write_text(
+        json.dumps({"best_model_path": str(checkpoint_path)}),
+        encoding="utf-8",
+    )
+
+    resolved = resolve_training_run_checkpoint_path(run_dir)
+
+    assert resolved == checkpoint_path.resolve()
 
 
 def test_resolve_embedding_sample_rate_supports_beats_passt_and_m2d() -> None:
@@ -1460,6 +1488,8 @@ def test_run_experiment_tests_last_trained_parameters(tmp_path) -> None:
         }
         for index in range(6)
     ]
+    initial_checkpoint_path = tmp_path / "initial.ckpt"
+    initial_checkpoint_path.write_bytes(b"checkpoint")
     test_call: dict[str, object] = {}
 
     class FakeLightningModule(torch.nn.Module):
@@ -1524,7 +1554,7 @@ def test_run_experiment_tests_last_trained_parameters(tmp_path) -> None:
         only_bsd35k_cs=False,
         embedding_model="beats",
         checkpoint_dir=str(tmp_path / "checkpoints"),
-        init_checkpoint_path=str(tmp_path / "initial.ckpt"),
+        init_checkpoint_path=str(initial_checkpoint_path),
         trust_checkpoint=True,
         fold=0,
         n_splits=5,
