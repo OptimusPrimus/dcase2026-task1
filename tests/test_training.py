@@ -41,6 +41,8 @@ from dcase2026_task1.experiments.training import (
     maybe_limit,
     pool_embedding_sequence,
     load_initial_training_state_dict,
+    load_pseudo_labels,
+    resolve_pseudo_label_dir,
     resolve_checkpoint_path,
     resolve_embedding_sample_rate,
     resolve_record_file_id,
@@ -122,6 +124,8 @@ def test_parser_seed_defaults_to_none() -> None:
     assert args.embedding_model == DEFAULT_EMBEDDING_MODEL
     assert args.use_llm_prior_embedding_fusion is False
     assert args.use_class_frequency_loss is False
+    assert args.pseudo_label_dir is None
+    assert args.pseudo_label_weight == 1.0
     assert args.only_bsd35k_cs is False
     assert args.init_checkpoint_path is None
     assert args.save_checkpoints is False
@@ -148,6 +152,17 @@ def test_resolve_seed_generates_random_seed_when_missing() -> None:
 
     assert resolved == 987654321
     randint.assert_called_once_with(0, (2**32) - 1)
+
+
+def test_resolve_pseudo_label_dir_uses_output_root_for_missing_relative_path(tmp_path: Path) -> None:
+    assert resolve_pseudo_label_dir("ensemble_a", tmp_path / "outputs") == tmp_path / "outputs" / "ensemble_a"
+
+
+def test_resolve_pseudo_label_dir_keeps_existing_path(tmp_path: Path) -> None:
+    pseudo_label_dir = tmp_path / "existing"
+    pseudo_label_dir.mkdir()
+
+    assert resolve_pseudo_label_dir(str(pseudo_label_dir), tmp_path / "outputs") == pseudo_label_dir
 
 
 def test_resolve_embedding_sample_rate_supports_beats_passt_and_m2d() -> None:
@@ -643,6 +658,55 @@ def test_write_logits_npz_stores_logits_by_file_id_and_label_names(tmp_path: Pat
     assert np.allclose(archive["file-a"], np.array([1.0, 2.0], dtype=np.float32))
     assert np.allclose(archive["file-b"], np.array([3.0, 4.0], dtype=np.float32))
     assert archive["label_names"].tolist() == ["is-w", "fx-o"]
+
+
+def test_load_pseudo_labels_from_predictions_json(tmp_path: Path) -> None:
+    label_specs = build_label_specs(
+        [
+            {"class_idx": 401, "class": "fx-o"},
+            {"class_idx": 203, "class": "is-w"},
+        ]
+    )
+    prediction_dir = tmp_path / "run"
+    prediction_dir.mkdir()
+    (prediction_dir / "predictions.json").write_text(
+        """
+        {
+          "label_names": ["fx-o", "is-w"],
+          "datasets": {
+            "BSD10k": [
+              {"file_id": "clip-a", "probabilities": [0.75, 0.25]}
+            ]
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    pseudo_labels = load_pseudo_labels(prediction_dir, label_specs)
+
+    assert np.allclose(pseudo_labels["BSD10k:clip-a"], np.array([0.25, 0.75]))
+
+
+def test_load_pseudo_labels_from_ensemble_logits(tmp_path: Path) -> None:
+    label_specs = build_label_specs(
+        [
+            {"class_idx": 401, "class": "fx-o"},
+            {"class_idx": 203, "class": "is-w"},
+        ]
+    )
+    ensemble_dir = tmp_path / "ensemble_a__b"
+    ensemble_dir.mkdir()
+    np.savez(
+        ensemble_dir / "bsd35k_cs_logits.npz",
+        clip_b=np.array([2.0, 0.0], dtype=np.float32),
+        label_names=np.asarray(["fx-o", "is-w"], dtype=np.str_),
+    )
+
+    pseudo_labels = load_pseudo_labels(ensemble_dir, label_specs)
+
+    expected = torch.softmax(torch.tensor([0.0, 2.0]), dim=0).numpy()
+    assert np.allclose(pseudo_labels["BSD35k-CS:clip_b"], expected)
 
 
 def test_build_embedding_model_beats_accepts_metadata() -> None:

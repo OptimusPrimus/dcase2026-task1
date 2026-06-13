@@ -57,6 +57,10 @@ DEFAULT_OUTPUT_ROOT = (
 )
 
 DEFAULT_EMBEDDING_MODEL = "beats"
+PSEUDO_LABEL_FILENAMES = {
+    "BSD10k": "bsd10k_logits.npz",
+    "BSD35k-CS": "bsd35k_cs_logits.npz",
+}
 EMBEDDING_SAMPLE_RATES = {
     "beats": 16000,
     "clap": 32000,
@@ -119,11 +123,13 @@ class WaveformClassificationDataset:
         indices: list[int],
         label_map: dict[int, int],
         target_sample_rate: int,
+        pseudo_labels: dict[str, np.ndarray] | None = None,
     ) -> None:
         self.records = records
         self.indices = indices
         self.label_map = label_map
         self.target_sample_rate = target_sample_rate
+        self.pseudo_labels = pseudo_labels or {}
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -138,9 +144,18 @@ class WaveformClassificationDataset:
         if sample_rate != self.target_sample_rate:
             waveform = _resample_audio(waveform, sample_rate, self.target_sample_rate)
 
+        pseudo_label = None
+        file_id = resolve_record_file_id(record)
+        source_dataset = str(record["source_dataset"])
+        for key in (f"{source_dataset}:{file_id}", file_id):
+            if key in self.pseudo_labels:
+                pseudo_label = self.pseudo_labels[key]
+                break
+
         return {
             "waveform": waveform.astype(np.float32, copy=False),
             "label": self.label_map[int(record["class_idx"])],
+            "pseudo_label": pseudo_label,
             "sound_id": int(record["sound_id"]),
             "source_dataset": str(record["source_dataset"]),
             "metadata": dict(record["metadata"]),
@@ -260,6 +275,17 @@ def build_parser() -> argparse.ArgumentParser:
             "Use inverse-frequency class weights from the effective training split in "
             "cross-entropy loss."
         ),
+    )
+    parser.add_argument(
+        "--pseudo-label-dir",
+        default=None,
+        help="Training run or ensemble directory containing pseudo labels.",
+    )
+    parser.add_argument(
+        "--pseudo-label-weight",
+        type=float,
+        default=0.0,
+        help="Weight for the pseudo-label loss term.",
     )
     parser.add_argument(
         "--use-llm-prior-embedding-fusion",
@@ -484,6 +510,15 @@ def create_experiment_dir(
     return experiment_dir
 
 
+def resolve_pseudo_label_dir(pseudo_label_dir: str | None, output_root: str | Path) -> Path | None:
+    if pseudo_label_dir is None:
+        return None
+    path = Path(pseudo_label_dir).expanduser()
+    if path.exists():
+        return path
+    return Path(output_root).expanduser() / path
+
+
 def maybe_limit(indices: list[int], limit: int | None) -> list[int]:
     if limit is None:
         return indices
@@ -592,17 +627,32 @@ def collate_waveforms(features: list[dict[str, Any]]) -> dict[str, Any]:
     waveforms = torch.zeros((batch_size, max_length), dtype=torch.float32)
     padding_mask = torch.ones((batch_size, max_length), dtype=torch.bool)
     labels = torch.tensor([feature["label"] for feature in features], dtype=torch.long)
+    pseudo_label_dim = next(
+        (
+            len(feature["pseudo_label"])
+            for feature in features
+            if feature.get("pseudo_label") is not None
+        ),
+        0,
+    )
+    pseudo_labels = torch.zeros((batch_size, pseudo_label_dim), dtype=torch.float32)
+    pseudo_label_mask = torch.zeros(batch_size, dtype=torch.bool)
 
     for index, feature in enumerate(features):
         waveform = torch.from_numpy(feature["waveform"])
         length = waveform.shape[0]
         waveforms[index, :length] = waveform
         padding_mask[index, :length] = False
+        if feature.get("pseudo_label") is not None:
+            pseudo_labels[index] = torch.as_tensor(feature["pseudo_label"], dtype=torch.float32)
+            pseudo_label_mask[index] = True
 
     return {
         "waveforms": waveforms,
         "padding_mask": padding_mask,
         "labels": labels,
+        "pseudo_labels": pseudo_labels,
+        "pseudo_label_mask": pseudo_label_mask,
         "metadata": [dict(feature["metadata"]) for feature in features],
     }
 
@@ -640,6 +690,77 @@ def resolve_record_file_id(record: dict[str, Any]) -> str:
     if audio_path not in (None, ""):
         return Path(str(audio_path)).stem
     raise KeyError(f"Could not resolve file_id for record: {record!r}")
+
+
+def _label_names(label_specs: list[LabelSpec]) -> list[str]:
+    return [spec.class_name for spec in sorted(label_specs, key=lambda spec: spec.label_id)]
+
+
+def _reorder_vector(
+    values: Any,
+    source_labels: list[str],
+    target_labels: list[str],
+) -> np.ndarray:
+    array = np.asarray(values, dtype=np.float32)
+    if source_labels == target_labels:
+        return array
+    by_label = {label: array[index] for index, label in enumerate(source_labels)}
+    return np.asarray([by_label[label] for label in target_labels], dtype=np.float32)
+
+
+def _load_pseudo_labels_json(path: Path, label_specs: list[LabelSpec]) -> dict[str, np.ndarray]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    target_labels = _label_names(label_specs)
+    source_labels = [str(label) for label in payload["label_names"]]
+    datasets = payload.get("datasets", {})
+    pseudo_labels: dict[str, np.ndarray] = {}
+    for dataset_name, json_key in (
+        ("BSD10k", "BSD10k"),
+        ("BSD35k-CS", "BSD35k-CS"),
+        ("BSD35k-CS", "BSD35k"),
+    ):
+        for row in datasets.get(json_key, []):
+            file_id = str(row["file_id"])
+            probabilities = _reorder_vector(row["probabilities"], source_labels, target_labels)
+            probabilities = probabilities / probabilities.sum()
+            pseudo_labels[file_id] = probabilities
+            pseudo_labels[f"{dataset_name}:{file_id}"] = probabilities
+    return pseudo_labels
+
+
+def _load_pseudo_labels_npz(path: Path, dataset_name: str, label_specs: list[LabelSpec]) -> dict[str, np.ndarray]:
+    target_labels = _label_names(label_specs)
+    pseudo_labels: dict[str, np.ndarray] = {}
+    with np.load(path, allow_pickle=False) as data:
+        source_labels = [str(label) for label in data["label_names"].tolist()]
+        for file_id in data.files:
+            if file_id == "label_names":
+                continue
+            logits = _reorder_vector(data[file_id], source_labels, target_labels)
+            probabilities = torch.softmax(torch.as_tensor(logits), dim=0).numpy()
+            pseudo_labels[file_id] = probabilities
+            pseudo_labels[f"{dataset_name}:{file_id}"] = probabilities
+    return pseudo_labels
+
+
+def load_pseudo_labels(path: str | Path, label_specs: list[LabelSpec]) -> dict[str, np.ndarray]:
+    pseudo_label_dir = Path(path).expanduser()
+    predictions_json = pseudo_label_dir / "predictions.json"
+    if predictions_json.exists():
+        return _load_pseudo_labels_json(predictions_json, label_specs)
+
+    pseudo_labels: dict[str, np.ndarray] = {}
+    for dataset_name, filename in PSEUDO_LABEL_FILENAMES.items():
+        logits_path = pseudo_label_dir / filename
+        if logits_path.exists():
+            pseudo_labels.update(_load_pseudo_labels_npz(logits_path, dataset_name, label_specs))
+    if not pseudo_labels:
+        raise FileNotFoundError(f"No pseudo labels found in {pseudo_label_dir}.")
+    return pseudo_labels
+
+
+def soft_cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    return -(targets * torch.nn.functional.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
 
 
 def load_full_dataset_records(dataset_name: str, root: Path) -> list[dict[str, Any]]:
@@ -999,6 +1120,8 @@ def run_experiment(args: argparse.Namespace) -> Path:
         raise ValueError(
             "--include-bsd35k-cs and --only-bsd35k-cs cannot both be enabled."
         )
+    if args.pseudo_label_weight < 0:
+        raise ValueError("--pseudo-label-weight must be non-negative.")
 
     llm_prior_noise_config = LLMPriorNoiseConfig(
         p_swap=args.llm_prior_noise_p_swap,
@@ -1026,6 +1149,12 @@ def run_experiment(args: argparse.Namespace) -> Path:
     label_specs = build_label_specs(train_records + val_records + test_records)
     label_map = build_label_map(label_specs)
     id2label = build_id2label(label_specs)
+    pseudo_label_dir = resolve_pseudo_label_dir(args.pseudo_label_dir, args.output_root)
+    pseudo_labels = (
+        load_pseudo_labels(pseudo_label_dir, label_specs)
+        if pseudo_label_dir is not None
+        else {}
+    )
     clean_train_size = sum(record["source_dataset"] == "BSD10k" for record in train_records)
     noisy_train_size = sum(record["source_dataset"] == "BSD35k-CS" for record in train_records)
     experiment_dir = create_experiment_dir(
@@ -1041,7 +1170,13 @@ def run_experiment(args: argparse.Namespace) -> Path:
     val_indices = maybe_limit(list(range(len(val_records))), args.max_val_items)
     test_indices = maybe_limit(list(range(len(test_records))), args.max_test_items)
 
-    train_dataset = WaveformClassificationDataset(train_records, train_indices, label_map, sample_rate)
+    train_dataset = WaveformClassificationDataset(
+        train_records,
+        train_indices,
+        label_map,
+        sample_rate,
+        pseudo_labels=pseudo_labels,
+    )
     val_dataset = WaveformClassificationDataset(val_records, val_indices, label_map, sample_rate)
     test_dataset = WaveformClassificationDataset(test_records, test_indices, label_map, sample_rate)
     class_frequency_loss_weights = None
@@ -1099,6 +1234,8 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     "weight_decay": args.weight_decay,
                     "label_smoothing": args.label_smoothing,
                     "use_class_frequency_loss": args.use_class_frequency_loss,
+                    "pseudo_label_dir": str(pseudo_label_dir) if pseudo_label_dir is not None else None,
+                    "pseudo_label_weight": args.pseudo_label_weight,
                     "warmup_epochs": args.warmup_epochs,
                     "warmup_steps": warmup_steps,
                     "lr_decay_start_epoch": args.lr_decay_start_epoch,
@@ -1150,6 +1287,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 weight=class_frequency_loss_weights,
                 label_smoothing=args.label_smoothing,
             )
+            self.pseudo_label_weight = args.pseudo_label_weight
             self.validation_outputs: list[dict[str, Any]] = []
             self.test_outputs: list[dict[str, Any]] = []
 
@@ -1221,6 +1359,20 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 llm_prior_noise_config=self.llm_prior_noise_config,
             )
             loss = self.loss_fn(logits, batch["labels"])
+            pseudo_mask = batch["pseudo_label_mask"].to(logits.device)
+            if self.pseudo_label_weight > 0 and pseudo_mask.any():
+                pseudo_loss = soft_cross_entropy(
+                    logits[pseudo_mask],
+                    batch["pseudo_labels"].to(logits.device)[pseudo_mask],
+                )
+                loss = (1 - self.pseudo_label_weight) * loss + self.pseudo_label_weight * pseudo_loss
+                self.log(
+                    "train/pseudo_label_loss",
+                    pseudo_loss,
+                    on_step=True,
+                    on_epoch=True,
+                    batch_size=batch["labels"].size(0),
+                )
             accuracy = (logits.argmax(dim=-1) == batch["labels"]).float().mean()
             self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch["labels"].size(0))
             self.log("train/accuracy", accuracy, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch["labels"].size(0))
@@ -1361,6 +1513,9 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "weight_decay": args.weight_decay,
             "head_dropout": args.head_dropout,
             "label_smoothing": args.label_smoothing,
+            "pseudo_label_dir": str(pseudo_label_dir) if pseudo_label_dir is not None else None,
+            "pseudo_label_weight": args.pseudo_label_weight,
+            "num_pseudo_labels": len(pseudo_labels),
             "max_epochs": args.max_epochs,
             "early_stopping_patience": args.early_stopping_patience,
             "warmup_epochs": args.warmup_epochs,
