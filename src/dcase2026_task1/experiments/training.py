@@ -701,6 +701,37 @@ def write_logits_npz(
     np.savez(path, **payload)
 
 
+def load_model_for_prediction_exports(
+    *,
+    lightning_module: torch.nn.Module,
+    build_model: Any,
+    checkpoint_path: str | Path | None,
+    device: torch.device,
+) -> torch.nn.Module:
+    if checkpoint_path is None:
+        prediction_model = lightning_module
+    else:
+        resolved_checkpoint_path = Path(checkpoint_path)
+        if not resolved_checkpoint_path.exists():
+            prediction_model = lightning_module
+        else:
+            checkpoint = torch.load(
+                str(resolved_checkpoint_path),
+                map_location="cpu",
+                weights_only=False,
+            )
+            if not isinstance(checkpoint, dict) or "state_dict" not in checkpoint:
+                raise RuntimeError(
+                    f"Training checkpoint at {resolved_checkpoint_path} does not contain a state_dict."
+                )
+            prediction_model = build_model()
+            prediction_model.load_state_dict(checkpoint["state_dict"])
+
+    prediction_model.to(device)
+    prediction_model.eval()
+    return prediction_model
+
+
 def compute_classification_metrics(
     logits: Any,
     labels: Any,
