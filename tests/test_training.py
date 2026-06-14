@@ -77,6 +77,7 @@ from dcase2026_task1.models.beats import (
 from dcase2026_task1.models.clap import (
     CLAPEmbeddingModel,
     build_clap_embedding_model,
+    metadata_to_keyword_texts,
     metadata_to_summary_texts,
 )
 from dcase2026_task1.models.clap.passt import CutInputIntoSegmentsWrapper
@@ -202,7 +203,9 @@ def test_resolve_training_run_checkpoint_path_uses_summary_best_model_path(tmp_p
 def test_resolve_embedding_sample_rate_supports_embedding_models() -> None:
     assert resolve_embedding_sample_rate("beats") == 16000
     assert resolve_embedding_sample_rate("clap") == 32000
+    assert resolve_embedding_sample_rate("clap_kw") == 32000
     assert resolve_embedding_sample_rate("lclap") == 48000
+    assert resolve_embedding_sample_rate("lclap_kw") == 48000
     assert resolve_embedding_sample_rate("m2d") == 16000
     assert resolve_embedding_sample_rate("passt") == 32000
 
@@ -927,6 +930,31 @@ def test_build_embedding_model_clap_accepts_metadata() -> None:
     ]
 
 
+def test_build_embedding_model_clap_kw_uses_keyword_metadata() -> None:
+    args = Namespace(
+        embedding_model="clap_kw",
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+    )
+
+    fake_model = torch.nn.Module()
+    fake_model.output_dim = 8
+    with patch(
+        "dcase2026_task1.experiments.training.build_clap_embedding_model",
+        return_value=fake_model,
+    ) as build_clap:
+        model = build_embedding_model(args, sample_rate=32000)
+
+    build_clap.assert_called_once_with(
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+        sample_rate=32000,
+        metadata_text_key="tags",
+        arch="clap_kw",
+    )
+    assert model is fake_model
+
+
 def test_build_embedding_model_lclap_accepts_metadata() -> None:
     args = Namespace(
         embedding_model="lclap",
@@ -975,6 +1003,31 @@ def test_build_embedding_model_lclap_accepts_metadata() -> None:
     ]
 
 
+def test_build_embedding_model_lclap_kw_uses_keyword_metadata() -> None:
+    args = Namespace(
+        embedding_model="lclap_kw",
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+    )
+
+    fake_model = torch.nn.Module()
+    fake_model.output_dim = 8
+    with patch(
+        "dcase2026_task1.experiments.training.build_lclap_embedding_model",
+        return_value=fake_model,
+    ) as build_lclap:
+        model = build_embedding_model(args, sample_rate=48000)
+
+    build_lclap.assert_called_once_with(
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+        sample_rate=48000,
+        metadata_text_key="tags",
+        arch="lclap_kw",
+    )
+    assert model is fake_model
+
+
 def test_clap_metadata_text_uses_metadata_summary() -> None:
     texts = metadata_to_summary_texts(
         [
@@ -986,6 +1039,19 @@ def test_clap_metadata_text_uses_metadata_summary() -> None:
     )
 
     assert texts == ["A metal impact.", "Rain and water outdoors.", ""]
+
+
+def test_clap_keyword_text_uses_tags() -> None:
+    texts = metadata_to_keyword_texts(
+        [
+            {"metadata_summary": "ignored", "tags": "metal; impact, hit"},
+            {"tags": ["rain", "water", "outdoors"]},
+            {"metadata_summary": "missing tags"},
+        ],
+        batch_size=3,
+    )
+
+    assert texts == ["metal impact hit", "rain water outdoors", ""]
 
 
 def test_build_clap_embedding_model_loads_default_checkpoint(tmp_path: Path) -> None:
@@ -1029,6 +1095,7 @@ def test_build_clap_embedding_model_loads_default_checkpoint(tmp_path: Path) -> 
     assert model.retrieval_model.loaded_state_dict is expected_state_dict
     assert model.checkpoint_cfg["checkpoint_alias"] == "clap"
     assert model.checkpoint_cfg["checkpoint_loaded"] is True
+    assert model.checkpoint_cfg["metadata_text_key"] == "metadata_summary"
 
 
 def test_build_clap_embedding_model_loads_compiled_checkpoint(tmp_path: Path) -> None:

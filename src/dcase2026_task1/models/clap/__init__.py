@@ -12,6 +12,8 @@ DEFAULT_ROBERTA_BASE = False
 DEFAULT_S_PATCHOUT_T = 15
 DEFAULT_S_PATCHOUT_F = 2
 DEFAULT_INITIAL_TAU = 0.07
+SUMMARY_METADATA_KEY = "metadata_summary"
+KEYWORD_METADATA_KEY = "tags"
 
 
 def _metadata_value_to_text(value: Any) -> str:
@@ -28,15 +30,42 @@ def _metadata_value_to_text(value: Any) -> str:
     return str(value).strip()
 
 
-def _metadata_summary_to_text(metadata_item: dict[str, Any] | None) -> str:
+def _metadata_item_to_text(
+    metadata_item: dict[str, Any] | None,
+    metadata_text_key: str,
+) -> str:
     if metadata_item is None:
         return ""
-    return _metadata_value_to_text(metadata_item.get("metadata_summary"))
+    return _metadata_value_to_text(metadata_item.get(metadata_text_key))
 
 
 def metadata_to_summary_texts(
     metadata: list[dict[str, Any]] | None,
     batch_size: int,
+) -> list[str]:
+    return metadata_to_texts(
+        metadata,
+        batch_size=batch_size,
+        metadata_text_key=SUMMARY_METADATA_KEY,
+    )
+
+
+def metadata_to_keyword_texts(
+    metadata: list[dict[str, Any]] | None,
+    batch_size: int,
+) -> list[str]:
+    return metadata_to_texts(
+        metadata,
+        batch_size=batch_size,
+        metadata_text_key=KEYWORD_METADATA_KEY,
+    )
+
+
+def metadata_to_texts(
+    metadata: list[dict[str, Any]] | None,
+    *,
+    batch_size: int,
+    metadata_text_key: str,
 ) -> list[str]:
     if metadata is None:
         return [""] * batch_size
@@ -44,7 +73,7 @@ def metadata_to_summary_texts(
         raise ValueError(
             f"Expected metadata for {batch_size} items, got {len(metadata)}."
         )
-    return [_metadata_summary_to_text(item) for item in metadata]
+    return [_metadata_item_to_text(item, metadata_text_key) for item in metadata]
 
 
 class CLAPEmbeddingModel(torch.nn.Module):
@@ -54,11 +83,13 @@ class CLAPEmbeddingModel(torch.nn.Module):
         *,
         sample_rate: int,
         max_audio_seconds: float = DEFAULT_MAX_AUDIO_SECONDS,
+        metadata_text_key: str = SUMMARY_METADATA_KEY,
     ) -> None:
         super().__init__()
         self.retrieval_model = retrieval_model
         self.sample_rate = sample_rate
         self.max_audio_seconds = max_audio_seconds
+        self.metadata_text_key = metadata_text_key
         self.output_dim = int(retrieval_model.audio_projection.out_features) + int(
             retrieval_model.text_projection.out_features
         )
@@ -69,15 +100,16 @@ class CLAPEmbeddingModel(torch.nn.Module):
         padding_mask: torch.Tensor | None = None,
         metadata: list[dict[str, Any]] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        summary_texts = metadata_to_summary_texts(
+        metadata_texts = metadata_to_texts(
             metadata,
             batch_size=waveforms.shape[0],
+            metadata_text_key=self.metadata_text_key,
         )
         durations = self._durations_from_padding_mask(waveforms, padding_mask)
         batch = {
             "audio": waveforms.unsqueeze(1),
             "duration": durations,
-            "captions": [[text] for text in summary_texts],
+            "captions": [[text] for text in metadata_texts],
         }
         audio_embeddings = self.retrieval_model.forward_audio(batch)
         text_embeddings = self.retrieval_model.forward_text(batch)
@@ -155,6 +187,8 @@ def build_clap_embedding_model(
     sample_rate: int,
     checkpoint_alias: str = DEFAULT_CHECKPOINT_ALIAS,
     load_checkpoint: bool = True,
+    metadata_text_key: str = SUMMARY_METADATA_KEY,
+    arch: str = "clap",
 ) -> CLAPEmbeddingModel:
     if sample_rate != DEFAULT_SAMPLE_RATE:
         raise ValueError(
@@ -185,14 +219,19 @@ def build_clap_embedding_model(
         state_dict = _normalize_compiled_state_dict_keys(state_dict)
         retrieval_model.load_state_dict(state_dict, strict=False)
 
-    model = CLAPEmbeddingModel(retrieval_model, sample_rate=sample_rate)
+    model = CLAPEmbeddingModel(
+        retrieval_model,
+        sample_rate=sample_rate,
+        metadata_text_key=metadata_text_key,
+    )
     model.checkpoint_cfg = {
-        "arch": "clap",
+        "arch": arch,
         "sample_rate": DEFAULT_SAMPLE_RATE,
         "audio_projection_dim": int(retrieval_model.audio_projection.out_features),
         "text_projection_dim": int(retrieval_model.text_projection.out_features),
         "checkpoint_alias": checkpoint_alias,
         "checkpoint_loaded": load_checkpoint,
+        "metadata_text_key": metadata_text_key,
     }
     return model
 
@@ -202,7 +241,11 @@ __all__ = [
     "DEFAULT_CHECKPOINT_ALIAS",
     "DEFAULT_MAX_AUDIO_SECONDS",
     "DEFAULT_SAMPLE_RATE",
+    "KEYWORD_METADATA_KEY",
+    "SUMMARY_METADATA_KEY",
     "build_clap_embedding_model",
+    "metadata_to_keyword_texts",
     "metadata_to_summary_texts",
+    "metadata_to_texts",
     "resolve_checkpoint_path",
 ]

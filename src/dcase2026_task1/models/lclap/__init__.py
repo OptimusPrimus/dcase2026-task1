@@ -10,7 +10,7 @@ from dcase2026_task1.models.audio_wrappers import (
     mean_segment_outputs,
     split_waveforms_into_segments,
 )
-from dcase2026_task1.models.clap import metadata_to_summary_texts
+from dcase2026_task1.models.clap import SUMMARY_METADATA_KEY, metadata_to_texts
 
 DEFAULT_SAMPLE_RATE = 48000
 DEFAULT_MAX_AUDIO_SECONDS = 10.0
@@ -108,6 +108,7 @@ class LAIONCLAPEmbeddingModel(torch.nn.Module):
         audio_embedding_dim: int = DEFAULT_AUDIO_EMBEDDING_DIM,
         text_embedding_dim: int = DEFAULT_TEXT_EMBEDDING_DIM,
         quantize_audio: bool = DEFAULT_QUANTIZE_AUDIO,
+        metadata_text_key: str = SUMMARY_METADATA_KEY,
     ) -> None:
         super().__init__()
         self.clap_module = clap_module
@@ -116,6 +117,7 @@ class LAIONCLAPEmbeddingModel(torch.nn.Module):
         self.audio_embedding_dim = audio_embedding_dim
         self.text_embedding_dim = text_embedding_dim
         self.quantize_audio = quantize_audio
+        self.metadata_text_key = metadata_text_key
         self.output_dim = audio_embedding_dim + text_embedding_dim
         wrap_spectrogram_modules_float32(self.clap_module)
 
@@ -125,9 +127,10 @@ class LAIONCLAPEmbeddingModel(torch.nn.Module):
         padding_mask: torch.Tensor | None = None,
         metadata: list[dict[str, Any]] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        summary_texts = metadata_to_summary_texts(
+        metadata_texts = metadata_to_texts(
             metadata,
             batch_size=waveforms.shape[0],
+            metadata_text_key=self.metadata_text_key,
         )
         max_segment_samples = int(self.max_audio_seconds * self.sample_rate)
         segment_waveforms, segment_padding_mask, segment_batch_indices = split_waveforms_into_segments(
@@ -144,7 +147,7 @@ class LAIONCLAPEmbeddingModel(torch.nn.Module):
             batch_size=waveforms.shape[0],
         )
         text_embeddings = self._text_embeddings_without_l2(
-            summary_texts,
+            metadata_texts,
             device=waveforms.device,
         )
 
@@ -251,6 +254,8 @@ def build_lclap_embedding_model(
     load_checkpoint: bool = True,
     enable_fusion: bool = DEFAULT_ENABLE_FUSION,
     amodel: str | None = None,
+    metadata_text_key: str = SUMMARY_METADATA_KEY,
+    arch: str = "lclap",
 ) -> LAIONCLAPEmbeddingModel:
     if sample_rate != DEFAULT_SAMPLE_RATE:
         raise ValueError(
@@ -274,9 +279,13 @@ def build_lclap_embedding_model(
         else:
             clap_module.load_ckpt(str(checkpoint_path))
 
-    model = LAIONCLAPEmbeddingModel(clap_module, sample_rate=sample_rate)
+    model = LAIONCLAPEmbeddingModel(
+        clap_module,
+        sample_rate=sample_rate,
+        metadata_text_key=metadata_text_key,
+    )
     model.checkpoint_cfg = {
-        "arch": "lclap",
+        "arch": arch,
         "sample_rate": DEFAULT_SAMPLE_RATE,
         "audio_projection_dim": DEFAULT_AUDIO_EMBEDDING_DIM,
         "text_projection_dim": DEFAULT_TEXT_EMBEDDING_DIM,
@@ -285,6 +294,7 @@ def build_lclap_embedding_model(
         "checkpoint_loaded": load_checkpoint,
         "enable_fusion": enable_fusion,
         "amodel": amodel,
+        "metadata_text_key": metadata_text_key,
     }
     return model
 

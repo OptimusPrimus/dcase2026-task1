@@ -19,7 +19,10 @@ from dcase2026_task1.data.splits import (
 )
 from dcase2026_task1.models.M2D import build_m2d_embedding_model
 from dcase2026_task1.models.beats import build_beats_embedding_model
-from dcase2026_task1.models.clap import build_clap_embedding_model
+from dcase2026_task1.models.clap import (
+    KEYWORD_METADATA_KEY,
+    build_clap_embedding_model,
+)
 from dcase2026_task1.models.lclap import build_lclap_embedding_model
 from dcase2026_task1.models.passt import build_passt_embedding_model
 
@@ -65,7 +68,9 @@ PSEUDO_LABEL_FILENAMES = {
 EMBEDDING_SAMPLE_RATES = {
     "beats": 16000,
     "clap": 32000,
+    "clap_kw": 32000,
     "lclap": 48000,
+    "lclap_kw": 48000,
     "m2d": 16000,
     "passt": 32000,
 }
@@ -629,11 +634,27 @@ def build_embedding_model(
             trust_checkpoint=args.trust_checkpoint,
             sample_rate=sample_rate,
         )
+    if args.embedding_model == "clap_kw":
+        return build_clap_embedding_model(
+            checkpoint_dir=args.checkpoint_dir,
+            trust_checkpoint=args.trust_checkpoint,
+            sample_rate=sample_rate,
+            metadata_text_key=KEYWORD_METADATA_KEY,
+            arch="clap_kw",
+        )
     if args.embedding_model == "lclap":
         return build_lclap_embedding_model(
             checkpoint_dir=args.checkpoint_dir,
             trust_checkpoint=args.trust_checkpoint,
             sample_rate=sample_rate,
+        )
+    if args.embedding_model == "lclap_kw":
+        return build_lclap_embedding_model(
+            checkpoint_dir=args.checkpoint_dir,
+            trust_checkpoint=args.trust_checkpoint,
+            sample_rate=sample_rate,
+            metadata_text_key=KEYWORD_METADATA_KEY,
+            arch="lclap_kw",
         )
     raise ValueError(f"Unsupported embedding model: {args.embedding_model!r}")
 
