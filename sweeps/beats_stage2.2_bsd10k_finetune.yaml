@@ -9,8 +9,8 @@ metric:
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: !!float 3e-6 # check
-    max: !!float 6e-6
+    min: !!float 1e-6 # check
+    max: !!float 5e-6
   weight_decay:
     value: 0.01
   pseudo_label_weight:
