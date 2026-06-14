@@ -4,7 +4,8 @@ from argparse import Namespace
 import json
 from pathlib import Path
 import random
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -1231,6 +1232,130 @@ def test_lclap_embedding_model_segments_audio_and_concatenates_text() -> None:
         ),
     )
     assert torch.equal(padding_mask, torch.zeros((2, 1), dtype=torch.bool))
+
+
+def test_lclap_embedding_model_skips_text_l2_normalization() -> None:
+    class FakeLAIONModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(1))
+            self.received_text = None
+
+        def encode_text(self, text_input, device):
+            self.received_text = text_input
+            return torch.tensor([[3.0, 4.0]], device=device)
+
+    class FakeLAIONModule(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.model = FakeLAIONModel()
+
+        def tokenizer(self, texts):
+            return {"input_ids": torch.tensor([[len(texts[0])]])}
+
+        def get_audio_embedding_from_data(self, x, use_tensor=True):
+            return torch.tensor([[1.0, 2.0]], device=x.device)
+
+        def get_text_embedding(self, texts, use_tensor=True):
+            return torch.tensor([[0.6, 0.8]])
+
+    clap_module = FakeLAIONModule()
+    model = LAIONCLAPEmbeddingModel(
+        clap_module,
+        sample_rate=4,
+        max_audio_seconds=2.5,
+        audio_embedding_dim=2,
+        text_embedding_dim=2,
+        quantize_audio=False,
+    )
+
+    embeddings, _ = model(
+        torch.ones((1, 10)),
+        torch.zeros((1, 10), dtype=torch.bool),
+        metadata=[{"metadata_summary": "A sound."}],
+    )
+
+    assert torch.equal(embeddings[0, 0, 2:], torch.tensor([3.0, 4.0]))
+    assert clap_module.model.received_text["input_ids"].shape == torch.Size([1, 1])
+
+
+def test_lclap_embedding_model_skips_audio_l2_normalization() -> None:
+    class FakeLAIONModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(1))
+            self.received_audio = None
+
+        def encode_audio(self, audio_input, device):
+            self.received_audio = audio_input
+            return {"embedding": torch.tensor([[3.0, 4.0]], device=device)}
+
+        def audio_projection(self, audio_embeddings):
+            return audio_embeddings * 2.0
+
+    class FakeLAIONModule(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.enable_fusion = False
+            self.model = FakeLAIONModel()
+            self.model_cfg = {"audio_cfg": {"sample_rate": 48000}}
+
+        def tokenizer(self, texts):
+            return {"input_ids": torch.tensor([[len(texts[0])]])}
+
+        def get_audio_embedding_from_data(self, x, use_tensor=True):
+            return torch.tensor([[0.6, 0.8]], device=x.device)
+
+        def get_text_embedding(self, texts, use_tensor=True):
+            return torch.tensor([[1.0, 2.0]])
+
+    def fake_get_audio_features(
+        temp_dict,
+        audio_waveform,
+        max_len,
+        data_truncating,
+        data_filling,
+        audio_cfg,
+        require_grad,
+    ):
+        temp_dict["waveform"] = audio_waveform
+        temp_dict["max_len"] = torch.tensor(float(max_len))
+        return temp_dict
+
+    laion_clap = ModuleType("laion_clap")
+    training = ModuleType("laion_clap.training")
+    data = ModuleType("laion_clap.training.data")
+    data.get_audio_features = fake_get_audio_features
+
+    clap_module = FakeLAIONModule()
+    model = LAIONCLAPEmbeddingModel(
+        clap_module,
+        sample_rate=4,
+        max_audio_seconds=2.5,
+        audio_embedding_dim=2,
+        text_embedding_dim=2,
+        quantize_audio=False,
+    )
+
+    with patch.dict(
+        sys.modules,
+        {
+            "laion_clap": laion_clap,
+            "laion_clap.training": training,
+            "laion_clap.training.data": data,
+        },
+    ):
+        embeddings, _ = model(
+            torch.ones((1, 10)),
+            torch.zeros((1, 10), dtype=torch.bool),
+            metadata=[{"metadata_summary": "A sound."}],
+        )
+
+    assert torch.equal(embeddings[0, 0, :2], torch.tensor([6.0, 8.0]))
+    assert torch.equal(
+        clap_module.model.received_audio["waveform"],
+        torch.ones((1, 10)),
+    )
 
 
 def test_lclap_embedding_model_wraps_spectrogram_extractor_only() -> None:

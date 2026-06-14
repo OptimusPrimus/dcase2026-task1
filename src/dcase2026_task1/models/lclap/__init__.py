@@ -143,8 +143,8 @@ class LAIONCLAPEmbeddingModel(torch.nn.Module):
             segment_batch_indices,
             batch_size=waveforms.shape[0],
         )
-        text_embeddings = self._as_tensor(
-            self.clap_module.get_text_embedding(summary_texts, use_tensor=True),
+        text_embeddings = self._text_embeddings_without_l2(
+            summary_texts,
             device=waveforms.device,
         )
 
@@ -160,11 +160,80 @@ class LAIONCLAPEmbeddingModel(torch.nn.Module):
         segment_waveforms = segment_waveforms.to(dtype=torch.float32)
         if self.quantize_audio:
             segment_waveforms = int16_quantize_audio(segment_waveforms)
-        audio_embeddings = self.clap_module.get_audio_embedding_from_data(
-            x=segment_waveforms,
-            use_tensor=True,
-        )
+        audio_embeddings = self._audio_embeddings_without_l2(segment_waveforms)
         return self._as_tensor(audio_embeddings, device=segment_waveforms.device)
+
+    def _text_embeddings_without_l2(
+        self,
+        texts: list[str],
+        *,
+        device: torch.device,
+    ) -> torch.Tensor:
+        model = getattr(self.clap_module, "model", None)
+        tokenizer = getattr(self.clap_module, "tokenizer", None)
+        if model is None or tokenizer is None or not hasattr(model, "encode_text"):
+            return self._as_tensor(
+                self.clap_module.get_text_embedding(texts, use_tensor=True),
+                device=device,
+            )
+
+        model.eval()
+        text_input = tokenizer(texts)
+        model_device = _module_device(model, fallback=device)
+        return self._as_tensor(
+            model.encode_text(text_input, device=model_device),
+            device=device,
+        )
+
+    def _audio_embeddings_without_l2(
+        self,
+        segment_waveforms: torch.Tensor,
+    ) -> torch.Tensor:
+        model = getattr(self.clap_module, "model", None)
+        if (
+            model is None
+            or not hasattr(model, "encode_audio")
+            or not hasattr(model, "audio_projection")
+            or not hasattr(self.clap_module, "model_cfg")
+        ):
+            audio_embeddings = self.clap_module.get_audio_embedding_from_data(
+                x=segment_waveforms,
+                use_tensor=True,
+            )
+            return self._as_tensor(audio_embeddings, device=segment_waveforms.device)
+
+        from laion_clap.training.data import get_audio_features
+
+        model.eval()
+        audio_feature_dicts = []
+        for audio_waveform in segment_waveforms:
+            audio_feature_dicts.append(
+                get_audio_features(
+                    {},
+                    audio_waveform,
+                    480000,
+                    data_truncating=(
+                        "fusion" if self.clap_module.enable_fusion else "rand_trunc"
+                    ),
+                    data_filling="repeatpad",
+                    audio_cfg=self.clap_module.model_cfg["audio_cfg"],
+                    require_grad=audio_waveform.requires_grad,
+                )
+            )
+
+        model_device = _module_device(model, fallback=segment_waveforms.device)
+        audio_input = {
+            key: torch.cat(
+                [feature_dict[key].unsqueeze(0) for feature_dict in audio_feature_dicts],
+                dim=0,
+            ).to(model_device)
+            for key in audio_feature_dicts[0].keys()
+        }
+        audio_embeddings = model.encode_audio(
+            audio_input,
+            device=model_device,
+        )["embedding"]
+        return model.audio_projection(audio_embeddings)
 
     @staticmethod
     def _as_tensor(value: Any, *, device: torch.device) -> torch.Tensor:
@@ -239,6 +308,13 @@ def _first_tensor_device(values: Iterable[Any]) -> torch.device | None:
             if device is not None:
                 return device
     return None
+
+
+def _module_device(module: torch.nn.Module, *, fallback: torch.device) -> torch.device:
+    try:
+        return next(module.parameters()).device
+    except StopIteration:
+        return fallback
 
 
 def _floating_tensors_to_float32(value: Any) -> Any:
