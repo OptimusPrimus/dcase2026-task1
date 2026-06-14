@@ -181,7 +181,7 @@ def build_lclap_embedding_model(
     checkpoint_alias: str = DEFAULT_CHECKPOINT_ALIAS,
     load_checkpoint: bool = True,
     enable_fusion: bool = DEFAULT_ENABLE_FUSION,
-    amodel: str | None = "HTSAT-base",
+    amodel: str | None = None,
 ) -> LAIONCLAPEmbeddingModel:
     if sample_rate != DEFAULT_SAMPLE_RATE:
         raise ValueError(
