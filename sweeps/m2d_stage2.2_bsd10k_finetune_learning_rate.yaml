@@ -9,12 +9,14 @@ metric:
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: !!float 5e-7
-    max: !!float 2e-6
+    min: !!float 1e-6
+    max: !!float 3e-6
   weight_decay:
-    value: 0.0
+    value: 0.01
   pseudo_label_weight:
-    value: 0.75
+    distribution: uniform
+    min: 0.75
+    max: 1.0
   warmup_epochs:
     value: 1
   lr_decay_start_epoch:
@@ -22,7 +24,7 @@ parameters:
   min_learning_rate:
     value: !!float 1e-7
   max_epochs:
-    value: 30
+    value: 50
 
 
 command:
@@ -37,6 +39,6 @@ command:
   - --embedding-model=m2d
   - --batch-size=18
   - --save-checkpoints
-  - --init-checkpoint-path=20260613_174237_BSD35k-CS_train_only_m2d_bfeaf84d
-  - --pseudo-label-dir=ensemble_20260613_140743_BSD10k_beats_b958ff06__20260613_145533_BSD10k_m2d_fef98c63__20260613_160638_BSD10k_clap_6dd7f8b4__20260613_160721_BSD10k_clap_4d86ad60
-  - ${args}
+  - --init-checkpoint-path=20260613_213344_BSD35k-CS_train_only_m2d_7e6ef007
+  - --pseudo-label-dir=ensemble_20260613_140511_BSD10k_m2d_814e267e__20260613_140743_BSD10k_beats_b958ff06__20260613_180850_BSD10k_clap_3150e7e3__20260614_142640_BSD10k_lclap_88cf44be__20260614_170033_BSD10k_lclap_kw_e7a04c3b
+    - ${args}
