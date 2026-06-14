@@ -36,7 +36,7 @@ command:
   - --wandb-mode=online
   - --use-llm-prior-embedding-fusion
   - --use-class-frequency-loss
-  - --embedding-model=lcap
+  - --embedding-model=lclap
   - --batch-size=18
   - --save-checkpoints
   - --only-bsd35k-cs
