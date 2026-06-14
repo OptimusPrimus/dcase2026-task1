@@ -9,8 +9,8 @@ metric:
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: !!float 1e-6 #check
-    max: !!float 5e-6
+    min: !!float 9e-7 #check
+    max: !!float 2e-6
   weight_decay:
     value: 0.01
   pseudo_label_weight:
@@ -39,6 +39,6 @@ command:
   - --embedding-model=passt # replace
   - --batch-size=18
   - --save-checkpoints
-  - --init-checkpoint-path=20260614_063704_BSD35k-CS_train_only_passt_8bf8561b # replace
+  - --init-checkpoint-path=20260614_063641_BSD35k-CS_train_only_passt_9de7dff1 # 20260614_063704_BSD35k-CS_train_only_passt_8bf8561b # replace
   - --pseudo-label-dir=ensemble_20260613_140511_BSD10k_m2d_814e267e__20260613_140743_BSD10k_beats_b958ff06__20260613_180850_BSD10k_clap_3150e7e3__20260614_142640_BSD10k_lclap_88cf44be__20260614_170033_BSD10k_lclap_kw_e7a04c3b
   - ${args}
