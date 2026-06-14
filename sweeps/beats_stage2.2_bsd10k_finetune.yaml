@@ -39,6 +39,6 @@ command:
   - --embedding-model=beats # replace
   - --batch-size=18
   - --save-checkpoints
-  - --init-checkpoint-path=20260614_143449_BSD35k-CS_train_only_beats_e843ef55 # replace
+  - --init-checkpoint-path=20260614_165524_BSD35k-CS_train_only_beats_630ae1c4 # 20260614_143449_BSD35k-CS_train_only_beats_e843ef55 # replace
   - --pseudo-label-dir=ensemble_20260613_140511_BSD10k_m2d_814e267e__20260613_140743_BSD10k_beats_b958ff06__20260613_180850_BSD10k_clap_3150e7e3__20260614_142640_BSD10k_lclap_88cf44be__20260614_170033_BSD10k_lclap_kw_e7a04c3b
   - ${args}
