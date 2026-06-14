@@ -30,6 +30,7 @@ command:
   - dcase2026_task1.experiments.training
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
+  - --use-llm-prior-embedding-fusion
   - --use-class-frequency-loss
   - --embedding-model=clap
   - --batch-size=18
