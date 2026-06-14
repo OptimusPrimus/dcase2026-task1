@@ -10,7 +10,7 @@ parameters:
   learning_rate:
     distribution: log_uniform_values
     min: !!float 1e-6
-    max: !!float 5e-6
+    max: !!float 6e-6
   weight_decay:
     value: 0.01
   warmup_epochs:
@@ -30,9 +30,9 @@ command:
   - dcase2026_task1.experiments.training
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
-  - --use-llm-prior-embedding-fusion
   - --use-class-frequency-loss
-  - --embedding-model=clap
+  - --use-llm-prior-embedding-fusion
+  - --embedding-model=lclap
   - --batch-size=18
   - --save-checkpoints
   - ${args}

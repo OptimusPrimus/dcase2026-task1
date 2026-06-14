@@ -79,6 +79,11 @@ from dcase2026_task1.models.clap import (
     metadata_to_summary_texts,
 )
 from dcase2026_task1.models.clap.passt import CutInputIntoSegmentsWrapper
+from dcase2026_task1.models.lclap import (
+    LAIONCLAPEmbeddingModel,
+    build_lclap_embedding_model,
+    int16_quantize_audio,
+)
 from dcase2026_task1.models.passt import _extract_passt_embeddings
 
 
@@ -193,8 +198,10 @@ def test_resolve_training_run_checkpoint_path_uses_summary_best_model_path(tmp_p
     assert resolved == checkpoint_path.resolve()
 
 
-def test_resolve_embedding_sample_rate_supports_beats_passt_and_m2d() -> None:
+def test_resolve_embedding_sample_rate_supports_embedding_models() -> None:
     assert resolve_embedding_sample_rate("beats") == 16000
+    assert resolve_embedding_sample_rate("clap") == 32000
+    assert resolve_embedding_sample_rate("lclap") == 48000
     assert resolve_embedding_sample_rate("m2d") == 16000
     assert resolve_embedding_sample_rate("passt") == 32000
 
@@ -919,6 +926,54 @@ def test_build_embedding_model_clap_accepts_metadata() -> None:
     ]
 
 
+def test_build_embedding_model_lclap_accepts_metadata() -> None:
+    args = Namespace(
+        embedding_model="lclap",
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+    )
+
+    class FakeLAIONCLAP(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.output_dim = 8
+            self.received_metadata = None
+
+        def forward(self, waveforms, padding_mask=None, metadata=None):
+            self.received_metadata = metadata
+            return (
+                torch.ones((waveforms.shape[0], 1, self.output_dim)),
+                torch.zeros((waveforms.shape[0], 1), dtype=torch.bool),
+            )
+
+    fake_model = FakeLAIONCLAP()
+    with patch(
+        "dcase2026_task1.experiments.training.build_lclap_embedding_model",
+        return_value=fake_model,
+    ) as build_lclap:
+        model = build_embedding_model(args, sample_rate=48000)
+        embedding_sequence, embedding_padding_mask = model(
+            torch.ones((2, 8)),
+            torch.zeros((2, 8), dtype=torch.bool),
+            metadata=[
+                {"metadata_summary": "A metal impact."},
+                {"metadata_summary": "Rain and water."},
+            ],
+        )
+
+    build_lclap.assert_called_once_with(
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+        sample_rate=48000,
+    )
+    assert embedding_sequence.shape == (2, 1, 8)
+    assert torch.equal(embedding_padding_mask, torch.zeros((2, 1), dtype=torch.bool))
+    assert model.received_metadata == [
+        {"metadata_summary": "A metal impact."},
+        {"metadata_summary": "Rain and water."},
+    ]
+
+
 def test_clap_metadata_text_uses_metadata_summary() -> None:
     texts = metadata_to_summary_texts(
         [
@@ -1067,6 +1122,208 @@ def test_clap_embedding_model_concatenates_audio_and_text_embeddings() -> None:
         ["Rain and water."],
     ]
     assert torch.allclose(retrieval_model.batch["duration"], torch.tensor([2.0, 1.0]))
+
+
+def test_build_lclap_embedding_model_loads_local_checkpoint(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "lclap.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+
+    class FakeLAIONModule:
+        def __init__(self) -> None:
+            self.loaded_path = None
+
+        def load_ckpt(self, path=None):
+            self.loaded_path = path
+
+    fake_module = FakeLAIONModule()
+    with patch(
+        "dcase2026_task1.models.lclap._build_laion_clap_module",
+        return_value=fake_module,
+    ):
+        model = build_lclap_embedding_model(
+            checkpoint_dir=tmp_path,
+            trust_checkpoint=True,
+            sample_rate=48000,
+        )
+
+    assert fake_module.loaded_path == str(checkpoint_path)
+    assert model.checkpoint_cfg["arch"] == "lclap"
+    assert model.checkpoint_cfg["checkpoint_alias"] == "lclap"
+    assert model.checkpoint_cfg["checkpoint_path"] == str(checkpoint_path)
+
+
+def test_build_lclap_embedding_model_loads_default_checkpoint(tmp_path: Path) -> None:
+    class FakeLAIONModule:
+        def __init__(self) -> None:
+            self.loaded_path = "not-called"
+
+        def load_ckpt(self, path=None):
+            self.loaded_path = path
+
+    fake_module = FakeLAIONModule()
+    with patch(
+        "dcase2026_task1.models.lclap._build_laion_clap_module",
+        return_value=fake_module,
+    ):
+        model = build_lclap_embedding_model(
+            checkpoint_dir=tmp_path,
+            trust_checkpoint=True,
+            sample_rate=48000,
+        )
+
+    assert fake_module.loaded_path is None
+    assert model.checkpoint_cfg["checkpoint_path"] is None
+
+
+def test_lclap_embedding_model_segments_audio_and_concatenates_text() -> None:
+    class FakeLAIONModule:
+        def __init__(self) -> None:
+            self.audio_shape = None
+            self.texts = None
+
+        def get_audio_embedding_from_data(self, x, use_tensor=True):
+            self.audio_shape = x.shape
+            return torch.stack(
+                [
+                    torch.full((2,), float(index + 1), dtype=torch.float32)
+                    for index in range(x.shape[0])
+                ]
+            )
+
+        def get_text_embedding(self, texts, use_tensor=True):
+            self.texts = texts
+            return torch.tensor([[10.0, 20.0], [30.0, 40.0]])
+
+    clap_module = FakeLAIONModule()
+    model = LAIONCLAPEmbeddingModel(
+        clap_module,
+        sample_rate=4,
+        max_audio_seconds=2.5,
+        audio_embedding_dim=2,
+        text_embedding_dim=2,
+        quantize_audio=False,
+    )
+
+    embeddings, padding_mask = model(
+        torch.ones((2, 13)),
+        torch.tensor(
+            [
+                [False] * 13,
+                [False] * 6 + [True] * 7,
+            ]
+        ),
+        metadata=[
+            {"metadata_summary": "A metal hit."},
+            {"metadata_summary": "Rain and water."},
+        ],
+    )
+
+    assert clap_module.audio_shape == torch.Size([3, 10])
+    assert clap_module.texts == ["A metal hit.", "Rain and water."]
+    assert embeddings.shape == (2, 1, 4)
+    assert torch.equal(
+        embeddings[:, 0],
+        torch.tensor(
+            [
+                [1.5, 1.5, 10.0, 20.0],
+                [3.0, 3.0, 30.0, 40.0],
+            ]
+        ),
+    )
+    assert torch.equal(padding_mask, torch.zeros((2, 1), dtype=torch.bool))
+
+
+def test_lclap_embedding_model_wraps_spectrogram_extractor_only() -> None:
+    class FakeSpectrogramExtractor(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(1, dtype=torch.float16))
+            self.received_dtype = None
+            self.output_requires_grad = None
+
+        def forward(self, x):
+            self.received_dtype = x.dtype
+            output = x * self.weight
+            self.output_requires_grad = output.requires_grad
+            return output
+
+    class FakeAudioBranch(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.spectrogram_extractor = FakeSpectrogramExtractor()
+            self.linear = torch.nn.Linear(1, 1).half()
+            self.reshape_received_dtype = None
+            self.reshape_output_requires_grad = None
+
+        def reshape_wav2img(self, x):
+            self.reshape_received_dtype = x.dtype
+            output = x * self.linear.weight.flatten()[0]
+            self.reshape_output_requires_grad = output.requires_grad
+            return output
+
+    class FakeLAIONModule(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.received_dtype = None
+            self.model = torch.nn.Module()
+            self.model.audio_branch = FakeAudioBranch()
+
+        def get_audio_embedding_from_data(self, x, use_tensor=True):
+            self.received_dtype = x.dtype
+            self.model.audio_branch.spectrogram_extractor(x)
+            self.model.audio_branch.reshape_wav2img(x)
+            return torch.ones((x.shape[0], 2), dtype=torch.float32)
+
+        def get_text_embedding(self, texts, use_tensor=True):
+            return torch.ones((len(texts), 2), dtype=torch.float32)
+
+    clap_module = FakeLAIONModule()
+    model = LAIONCLAPEmbeddingModel(
+        clap_module,
+        sample_rate=4,
+        max_audio_seconds=2.5,
+        audio_embedding_dim=2,
+        text_embedding_dim=2,
+        quantize_audio=False,
+    )
+
+    embeddings, _ = model(
+        torch.ones((1, 10), dtype=torch.float16),
+        torch.zeros((1, 10), dtype=torch.bool),
+        metadata=[{"metadata_summary": "A sound."}],
+    )
+
+    assert clap_module.received_dtype == torch.float32
+    assert (
+        clap_module.model.audio_branch.spectrogram_extractor.module.received_dtype
+        == torch.float32
+    )
+    assert (
+        next(clap_module.model.audio_branch.spectrogram_extractor.parameters()).dtype
+        == torch.float32
+    )
+    assert (
+        next(clap_module.model.audio_branch.spectrogram_extractor.parameters()).requires_grad
+        is False
+    )
+    assert (
+        clap_module.model.audio_branch.spectrogram_extractor.module.output_requires_grad
+        is False
+    )
+    assert clap_module.model.audio_branch.reshape_received_dtype == torch.float32
+    assert clap_module.model.audio_branch.reshape_output_requires_grad is False
+    assert next(clap_module.model.audio_branch.linear.parameters()).dtype == torch.float16
+    assert next(clap_module.model.audio_branch.linear.parameters()).requires_grad is True
+    assert embeddings.dtype == torch.float32
+
+
+def test_lclap_quantizes_audio_like_laion_example() -> None:
+    quantized = int16_quantize_audio(torch.tensor([[-2.0, -0.5, 0.5, 2.0]]))
+
+    assert torch.allclose(
+        quantized,
+        torch.tensor([[-1.0, -16383.0 / 32767.0, 16383.0 / 32767.0, 1.0]]),
+    )
 
 
 def test_clap_segment_wrapper_pads_short_inputs_to_minimum_length() -> None:
