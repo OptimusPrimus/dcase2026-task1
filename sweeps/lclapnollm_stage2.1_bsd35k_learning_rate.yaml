@@ -35,7 +35,7 @@ command:
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
   - --use-class-frequency-loss
-  - --embedding-model=lcap
+  - --embedding-model=lclap
   - --batch-size=18
   - --save-checkpoints
   - --only-bsd35k-cs
