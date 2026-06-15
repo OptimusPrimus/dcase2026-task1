@@ -417,6 +417,7 @@ def evaluate_model_combinations(
                 "test_score": primary_metric_score(results["test"]),
             }
         )
+        results["combined_score"] = results["validation_score"] + results["test_score"]
         combination_results.append(results)
 
     combination_results.sort(
@@ -430,6 +431,71 @@ def evaluate_model_combinations(
         reverse=True,
     )
     return combination_results
+
+
+def sorted_combinations_by_score(
+    combinations_results: list[dict[str, Any]],
+    score_key: str,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    return sorted(
+        combinations_results,
+        key=lambda item: (
+            item[score_key],
+            item["validation_score"],
+            item["test_score"],
+            -item["size"],
+            item["short_model_names"],
+        ),
+        reverse=True,
+    )[:limit]
+
+
+def format_combination_ranking(
+    title: str,
+    combinations_results: list[dict[str, Any]],
+    score_key: str,
+    limit: int = 5,
+) -> str:
+    rows = sorted_combinations_by_score(combinations_results, score_key, limit=limit)
+    lines = [title]
+    lines.append("rank  val_score  test_score  combined  size  models")
+    for rank, result in enumerate(rows, start=1):
+        models = "__".join(result["short_model_names"])
+        lines.append(
+            f"{rank:>4}  "
+            f"{result['validation_score']:.6f}  "
+            f"{result['test_score']:.6f}  "
+            f"{result['combined_score']:.6f}  "
+            f"{result['size']:>4}  "
+            f"{models}"
+        )
+    return "\n".join(lines)
+
+
+def format_combination_rankings(results: dict[str, Any], limit: int = 5) -> str:
+    combinations_results = results["combinations"]
+    sections = [
+        format_combination_ranking(
+            "Top 5 systems by validation score",
+            combinations_results,
+            "validation_score",
+            limit=limit,
+        ),
+        format_combination_ranking(
+            "Top 5 systems by test score",
+            combinations_results,
+            "test_score",
+            limit=limit,
+        ),
+        format_combination_ranking(
+            "Top 5 systems by combined validation+test score",
+            combinations_results,
+            "combined_score",
+            limit=limit,
+        ),
+    ]
+    return "\n\n".join(sections)
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -510,7 +576,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> None:
     args = build_parser().parse_args()
     results = run(args)
-    print(json.dumps(results, indent=2, ensure_ascii=False))
+    print(format_combination_rankings(results))
 
 
 if __name__ == "__main__":

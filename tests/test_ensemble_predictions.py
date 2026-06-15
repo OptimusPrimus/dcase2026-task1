@@ -13,6 +13,7 @@ from dcase2026_task1.experiments.ensemble_predictions import (
     default_ensemble_dir,
     evaluate_ensemble,
     evaluate_model_combinations,
+    format_combination_rankings,
     label_names_from_config,
     load_logits_npz,
     short_model_name,
@@ -236,4 +237,34 @@ def test_evaluate_model_combinations_reports_and_sorts_all_subsets(tmp_path: Pat
     assert results[0]["test"]["accuracy"] == 1.0
     assert results[0]["validation_score"] == 1.0
     assert results[0]["test_score"] == 1.0
+    assert results[0]["combined_score"] == 2.0
     assert all("val" in result and "test" in result for result in results)
+
+
+def test_format_combination_rankings_prints_three_top_lists() -> None:
+    results = {
+        "combinations": [
+            {
+                "short_model_names": ["a"],
+                "size": 1,
+                "validation_score": 0.7,
+                "test_score": 0.6,
+                "combined_score": 1.3,
+            },
+            {
+                "short_model_names": ["b"],
+                "size": 1,
+                "validation_score": 0.6,
+                "test_score": 0.9,
+                "combined_score": 1.5,
+            },
+        ]
+    }
+
+    output = format_combination_rankings(results)
+
+    assert "Top 5 systems by validation score" in output
+    assert "Top 5 systems by test score" in output
+    assert "Top 5 systems by combined validation+test score" in output
+    assert "rank  val_score  test_score  combined  size  models" in output
+    assert output.count("\n   1  ") == 3
