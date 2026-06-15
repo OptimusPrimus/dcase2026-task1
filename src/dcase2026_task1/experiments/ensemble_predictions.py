@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from itertools import combinations
 import json
 import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from tqdm.auto import tqdm
 
 from dcase2026_task1.data.splits import (
     DEFAULT_BSD_SPLIT_SEED,
@@ -114,8 +116,15 @@ def sanitize_path_part(value: str) -> str:
     return cleaned or "model"
 
 
+def short_model_name(model_dir: Path) -> str:
+    parts = model_dir.name.split("_")
+    if len(parts) >= 2:
+        return sanitize_path_part("_".join(parts[-2:]))
+    return sanitize_path_part(model_dir.name)
+
+
 def default_ensemble_dir(model_dirs: list[Path], ensemble_root: Path) -> Path:
-    model_names = sorted(sanitize_path_part(model_dir.name) for model_dir in model_dirs)
+    model_names = sorted(short_model_name(model_dir) for model_dir in model_dirs)
     return ensemble_root / f"ensemble_{'__'.join(model_names)}"
 
 
@@ -352,6 +361,77 @@ def evaluate_ensemble(
     }
 
 
+def primary_metric_score(metrics: dict[str, Any]) -> float:
+    if not isinstance(metrics, dict):
+        return float("-inf")
+    return float(
+        metrics.get(
+            "hierarchical_f1",
+            metrics.get("macro_f1", metrics.get("accuracy", float("-inf"))),
+        )
+    )
+
+
+def evaluate_model_combinations(
+    model_dirs: list[Path],
+    val_records: list[dict[str, Any]],
+    test_records: list[dict[str, Any]],
+    logits_per_model: list[dict[str, np.ndarray]],
+    config: dict[str, Any],
+    show_progress: bool = False,
+) -> list[dict[str, Any]]:
+    if len(model_dirs) != len(logits_per_model):
+        raise ValueError("model_dirs and logits_per_model must have the same length.")
+
+    combination_results: list[dict[str, Any]] = []
+    model_indices = range(len(model_dirs))
+    all_combinations = (
+        indices
+        for size in range(1, len(model_dirs) + 1)
+        for indices in combinations(model_indices, size)
+    )
+    progress = tqdm(
+        all_combinations,
+        total=(2 ** len(model_dirs)) - 1,
+        desc="Evaluating model combinations",
+        unit="combo",
+        disable=not show_progress,
+    )
+    for indices in progress:
+        selected_dirs = [model_dirs[index] for index in indices]
+        selected_logits = [logits_per_model[index] for index in indices]
+        results = evaluate_ensemble(
+            val_records=val_records,
+            test_records=test_records,
+            logits_per_model=selected_logits,
+            config=config,
+        )
+        results.update(
+            {
+                "model_indices": list(indices),
+                "models": [str(model_dir) for model_dir in selected_dirs],
+                "model_names": [model_dir.name for model_dir in selected_dirs],
+                "short_model_names": [short_model_name(model_dir) for model_dir in selected_dirs],
+                "size": len(indices),
+                "validation_score": primary_metric_score(results["val"]),
+                "test_score": primary_metric_score(results["test"]),
+            }
+        )
+        combination_results.append(results)
+
+    combination_results.sort(
+        key=lambda item: (
+            item["validation_score"],
+            item["val"].get("macro_f1", float("-inf")),
+            item["val"].get("accuracy", float("-inf")),
+            -item["size"],
+            item["short_model_names"],
+        ),
+        reverse=True,
+    )
+    return combination_results
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     output_root = Path(args.output_root).expanduser()
     model_dirs = [resolve_model_dir(model, output_root) for model in args.models]
@@ -360,21 +440,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     reference_config = configs[0]
     label_names = label_names_from_config(reference_config)
-    ensemble_root = Path(args.ensemble_root or output_root).expanduser()
-    ensemble_dir = (
-        Path(args.ensemble_dir).expanduser()
-        if args.ensemble_dir is not None
-        else default_ensemble_dir(model_dirs, ensemble_root)
-    )
-    ensemble_prediction_paths = write_ensembled_prediction_files(
-        model_dirs=model_dirs,
-        output_dir=ensemble_dir,
-        label_names=label_names,
-        prediction_filenames_by_dataset={
-            **PREDICTION_FILENAMES_BY_DATASET,
-            "BSD10k": args.prediction_filename,
-        },
-    )
     logits_per_model = [
         load_logits_npz(model_dir / args.prediction_filename, label_names)
         for model_dir in model_dirs
@@ -388,19 +453,43 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     bsd10k_root = Path(args.bsd10k_root or config_bsd10k_root or DEFAULT_BSD10K_ROOT).expanduser()
     split_config = reference_config["split"]
     val_records, test_records = build_bsd10k_eval_records(bsd10k_root, split_config)
-    results = evaluate_ensemble(
+    combination_results = evaluate_model_combinations(
+        model_dirs=model_dirs,
         val_records=val_records,
         test_records=test_records,
         logits_per_model=logits_per_model,
         config=reference_config,
+        show_progress=True,
     )
+    best_combination = combination_results[0]
+    best_model_dirs = [model_dirs[index] for index in best_combination["model_indices"]]
+
+    ensemble_root = Path(args.ensemble_root or output_root).expanduser()
+    ensemble_dir = (
+        Path(args.ensemble_dir).expanduser()
+        if args.ensemble_dir is not None
+        else default_ensemble_dir(best_model_dirs, ensemble_root)
+    )
+    ensemble_prediction_paths = write_ensembled_prediction_files(
+        model_dirs=best_model_dirs,
+        output_dir=ensemble_dir,
+        label_names=label_names,
+        prediction_filenames_by_dataset={
+            **PREDICTION_FILENAMES_BY_DATASET,
+            "BSD10k": args.prediction_filename,
+        },
+    )
+    results = dict(best_combination)
     results.update(
         {
-            "models": [str(model_dir) for model_dir in model_dirs],
+            "input_models": [str(model_dir) for model_dir in model_dirs],
+            "best_combination": best_combination,
+            "combinations": combination_results,
             "prediction_filename": args.prediction_filename,
             "ensemble_dir": str(ensemble_dir),
             "ensemble_prediction_paths": ensemble_prediction_paths,
             "bsd10k_root": str(bsd10k_root),
+            "ranking_metric": "val/hierarchical_f1",
             "split": {
                 "fold": split_config["fold"],
                 "n_splits": split_config["n_splits"],

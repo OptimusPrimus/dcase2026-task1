@@ -12,8 +12,10 @@ from dcase2026_task1.experiments.ensemble_predictions import (
     build_bsd10k_eval_records,
     default_ensemble_dir,
     evaluate_ensemble,
+    evaluate_model_combinations,
     label_names_from_config,
     load_logits_npz,
+    short_model_name,
     write_ensembled_prediction_files,
 )
 
@@ -81,11 +83,15 @@ def test_average_logits_by_file_id_checks_matching_keys() -> None:
 
 def test_default_ensemble_dir_uses_sorted_model_names(tmp_path: Path) -> None:
     output_dir = default_ensemble_dir(
-        [tmp_path / "z-model", tmp_path / "a model"],
+        [
+            tmp_path / "20260614_231922_BSD10k_clap_30005d33",
+            tmp_path / "20260613_140743_BSD10k_beats_b958ff06",
+        ],
         tmp_path / "outputs",
     )
 
-    assert output_dir == tmp_path / "outputs" / "ensemble_a-model__z-model"
+    assert short_model_name(tmp_path / "20260614_231922_BSD10k_clap_30005d33") == "clap_30005d33"
+    assert output_dir == tmp_path / "outputs" / "ensemble_beats_b958ff06__clap_30005d33"
 
 
 def test_write_ensembled_prediction_files_writes_all_dataset_npzs(tmp_path: Path) -> None:
@@ -178,3 +184,56 @@ def test_evaluate_ensemble_reports_val_and_test_metrics() -> None:
     assert results["val"]["accuracy"] == 1.0
     assert results["test"]["accuracy"] == 1.0
     assert label_names_from_config(config) == ["m-si", "fx-a"]
+
+
+def test_evaluate_model_combinations_reports_and_sorts_all_subsets(tmp_path: Path) -> None:
+    config = _config()
+    model_dirs = [
+        tmp_path / "20260614_000000_BSD10k_a_11111111",
+        tmp_path / "20260614_000000_BSD10k_b_22222222",
+        tmp_path / "20260614_000000_BSD10k_c_33333333",
+    ]
+    val_records = [
+        {"sound_id": 1, "class_idx": 10},
+        {"sound_id": 2, "class_idx": 20},
+    ]
+    test_records = [
+        {"sound_id": 3, "class_idx": 10},
+        {"sound_id": 4, "class_idx": 20},
+    ]
+    logits_per_model = [
+        {
+            "1": np.array([3.0, 0.0]),
+            "2": np.array([2.0, 1.0]),
+            "3": np.array([3.0, 0.0]),
+            "4": np.array([2.0, 1.0]),
+        },
+        {
+            "1": np.array([1.0, 2.0]),
+            "2": np.array([0.0, 3.0]),
+            "3": np.array([1.0, 2.0]),
+            "4": np.array([0.0, 3.0]),
+        },
+        {
+            "1": np.array([0.0, 6.0]),
+            "2": np.array([6.0, 0.0]),
+            "3": np.array([0.0, 6.0]),
+            "4": np.array([6.0, 0.0]),
+        },
+    ]
+
+    results = evaluate_model_combinations(
+        model_dirs=model_dirs,
+        val_records=val_records,
+        test_records=test_records,
+        logits_per_model=logits_per_model,
+        config=config,
+    )
+
+    assert len(results) == 7
+    assert results[0]["short_model_names"] == ["a_11111111", "b_22222222"]
+    assert results[0]["val"]["accuracy"] == 1.0
+    assert results[0]["test"]["accuracy"] == 1.0
+    assert results[0]["validation_score"] == 1.0
+    assert results[0]["test_score"] == 1.0
+    assert all("val" in result and "test" in result for result in results)
