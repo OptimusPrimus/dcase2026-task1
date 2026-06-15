@@ -955,7 +955,8 @@ def compute_classification_metrics(
     labels: Any,
     num_labels: int,
     id2label: dict[int, str] | None = None,
-) -> dict[str, float]:
+    include_class_wise_hierarchical: bool = False,
+) -> dict[str, Any]:
     from sklearn.metrics import accuracy_score, f1_score, recall_score
 
     predictions = np.asarray(logits).argmax(axis=-1)
@@ -985,7 +986,16 @@ def compute_classification_metrics(
     if id2label is not None:
         y_true = [id2label[int(label)] for label in labels_np.tolist()]
         y_pred = [id2label[int(prediction)] for prediction in predictions.tolist()]
-        hierarchical_metrics = compute_hierarchical_metrics(y_true, y_pred)
+        hierarchical_metrics = compute_hierarchical_metrics(
+            y_true,
+            y_pred,
+            class_names=(
+                [id2label[index] for index in all_labels]
+                if include_class_wise_hierarchical
+                else None
+            ),
+            include_class_wise=include_class_wise_hierarchical,
+        )
         metrics.update(hierarchical_metrics)
     return metrics
 
@@ -1124,7 +1134,9 @@ def build_prediction_head(
 def compute_hierarchical_metrics(
     y_true: list[str],
     y_pred: list[str],
-) -> dict[str, float]:
+    class_names: list[str] | None = None,
+    include_class_wise: bool = False,
+) -> dict[str, Any]:
     def safe_mean(values: list[float]) -> float:
         if not values:
             return 0.0
@@ -1143,6 +1155,7 @@ def compute_hierarchical_metrics(
             return d / 2
         return 0.0
 
+    metric_class_names = class_names if class_names is not None else sorted(set(y_true))
     class_hierarchical_precision = {
         class_name: safe_mean(
             [
@@ -1151,7 +1164,7 @@ def compute_hierarchical_metrics(
                 if predicted_class == class_name
             ]
         )
-        for class_name in set(y_true)
+        for class_name in metric_class_names
     }
     class_hierarchical_recall = {
         class_name: safe_mean(
@@ -1161,20 +1174,30 @@ def compute_hierarchical_metrics(
                 if target_class == class_name
             ]
         )
-        for class_name in set(y_true)
+        for class_name in metric_class_names
     }
     class_hierarchical_f1 = {
         class_name: safe_f1(
             class_hierarchical_precision[class_name],
             class_hierarchical_recall[class_name],
         )
-        for class_name in set(y_true)
+        for class_name in metric_class_names
     }
-    return {
+    metrics: dict[str, Any] = {
         "hierarchical_precision": safe_mean(list(class_hierarchical_precision.values())),
         "hierarchical_recall": safe_mean(list(class_hierarchical_recall.values())),
         "hierarchical_f1": safe_mean(list(class_hierarchical_f1.values())),
     }
+    if include_class_wise:
+        metrics["class_wise_hierarchical"] = {
+            class_name: {
+                "hierarchical_precision": class_hierarchical_precision[class_name],
+                "hierarchical_recall": class_hierarchical_recall[class_name],
+                "hierarchical_f1": class_hierarchical_f1[class_name],
+            }
+            for class_name in metric_class_names
+        }
+    return metrics
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:

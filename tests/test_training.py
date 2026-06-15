@@ -1707,6 +1707,26 @@ def test_compute_hierarchical_metrics_match_text_eval_behavior() -> None:
     assert metrics["hierarchical_f1"] == 0.6666666666666666
 
 
+def test_compute_hierarchical_metrics_can_include_class_wise_metrics() -> None:
+    metrics = compute_hierarchical_metrics(
+        ["m-sp", "fx-a"],
+        ["m-sp", "fx-o"],
+        class_names=["m-sp", "fx-a"],
+        include_class_wise=True,
+    )
+
+    assert metrics["class_wise_hierarchical"]["m-sp"] == {
+        "hierarchical_precision": 1.0,
+        "hierarchical_recall": 1.0,
+        "hierarchical_f1": 1.0,
+    }
+    assert metrics["class_wise_hierarchical"]["fx-a"] == {
+        "hierarchical_precision": 0.0,
+        "hierarchical_recall": 0.375,
+        "hierarchical_f1": 0.0,
+    }
+
+
 def test_compute_classification_metrics_includes_hierarchical_precision() -> None:
     logits = torch.tensor([[3.0, 1.0], [2.0, 4.0]])
     labels = torch.tensor([0, 1])
@@ -1722,6 +1742,23 @@ def test_compute_classification_metrics_includes_hierarchical_precision() -> Non
     assert metrics["hierarchical_precision"] == 1.0
     assert metrics["hierarchical_recall"] == 1.0
     assert metrics["hierarchical_f1"] == 1.0
+
+
+def test_compute_classification_metrics_can_include_class_wise_hierarchical_metrics() -> None:
+    logits = torch.tensor([[3.0, 1.0], [4.0, 2.0]])
+    labels = torch.tensor([0, 1])
+
+    metrics = compute_classification_metrics(
+        logits.numpy(),
+        labels.numpy(),
+        num_labels=2,
+        id2label={0: "m-sp", 1: "fx-a"},
+        include_class_wise_hierarchical=True,
+    )
+
+    assert set(metrics["class_wise_hierarchical"]) == {"m-sp", "fx-a"}
+    assert metrics["class_wise_hierarchical"]["m-sp"]["hierarchical_precision"] == 0.5
+    assert metrics["class_wise_hierarchical"]["fx-a"]["hierarchical_recall"] == 0.0
 
 
 def test_apply_hard_llm_constraints_masks_to_allowed_labels() -> None:

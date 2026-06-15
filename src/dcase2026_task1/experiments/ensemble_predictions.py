@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from itertools import combinations
 import json
 import re
@@ -23,6 +24,8 @@ from dcase2026_task1.experiments.training import (
 )
 
 BSD10K_LOGITS_FILENAME = "bsd10k_logits.npz"
+BSD2K_PREDICTIONS_CSV_FILENAME = "bsd2k_predictions.csv"
+SYSTEM_EVALUATION_YML_FILENAME = "system_evaluation.yml"
 PREDICTION_FILENAMES_BY_DATASET = {
     "BSD10k": "bsd10k_logits.npz",
     "BSD35k-CS": "bsd35k_cs_logits.npz",
@@ -78,6 +81,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-json",
         default=None,
         help="Optional path where the ensemble metrics JSON should be written.",
+    )
+    parser.add_argument(
+        "--bsd2k-output-csv",
+        default=None,
+        help=(
+            "Optional path for the BSD2k prediction CSV. Defaults to "
+            f"{BSD2K_PREDICTIONS_CSV_FILENAME} in the ensemble output directory."
+        ),
+    )
+    parser.add_argument(
+        "--system-evaluation-yml",
+        default=None,
+        help=(
+            "Optional path for the system evaluation YAML. Defaults to "
+            f"{SYSTEM_EVALUATION_YML_FILENAME} in the ensemble output directory."
+        ),
     )
     return parser
 
@@ -260,6 +279,41 @@ def write_ensembled_prediction_files(
     return output_paths
 
 
+def softmax(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    shifted = values - np.max(values)
+    exp_values = np.exp(shifted)
+    return exp_values / exp_values.sum()
+
+
+def write_bsd2k_prediction_csv(
+    path: Path,
+    logits_by_file_id: dict[str, np.ndarray],
+    label_names: list[str],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "id",
+                "predicted_bst_second_level_class",
+                "prediction_score",
+            ],
+        )
+        writer.writeheader()
+        for file_id, logits in sorted(logits_by_file_id.items()):
+            probabilities = softmax(logits)
+            prediction_index = int(np.argmax(probabilities).item())
+            writer.writerow(
+                {
+                    "id": file_id,
+                    "predicted_bst_second_level_class": label_names[prediction_index],
+                    "prediction_score": f"{float(probabilities[prediction_index]):.10f}",
+                }
+            )
+
+
 def average_logits_for_records(
     records: list[dict[str, Any]],
     logits_per_model: list[dict[str, np.ndarray]],
@@ -331,6 +385,7 @@ def evaluate_ensemble(
     test_records: list[dict[str, Any]],
     logits_per_model: list[dict[str, np.ndarray]],
     config: dict[str, Any],
+    include_class_wise_hierarchical: bool = False,
 ) -> dict[str, Any]:
     label_map = label_map_from_config(config)
     id2label = id2label_from_config(config)
@@ -347,12 +402,14 @@ def evaluate_ensemble(
             val_labels,
             num_labels,
             id2label=id2label,
+            include_class_wise_hierarchical=include_class_wise_hierarchical,
         ),
         "test": compute_classification_metrics(
             test_logits,
             test_labels,
             num_labels,
             id2label=id2label,
+            include_class_wise_hierarchical=include_class_wise_hierarchical,
         ),
         "counts": {
             "val": len(val_records),
@@ -498,6 +555,53 @@ def format_combination_rankings(results: dict[str, Any], limit: int = 5) -> str:
     return "\n\n".join(sections)
 
 
+def _format_yml_float(value: Any) -> str:
+    return f"{float(value):.3f}"
+
+
+def format_system_evaluation_yml(
+    metrics: dict[str, Any],
+    label_names: list[str],
+) -> str:
+    class_wise = metrics.get("class_wise_hierarchical")
+    if not isinstance(class_wise, dict):
+        raise ValueError("Metrics must include class_wise_hierarchical.")
+
+    lines = [
+        "# Submission information",
+        "",
+        "results:",
+        "  development_datasets:",
+        "    bsd10k-v1.2:",
+        "      overall:",
+        f"        hP: {_format_yml_float(metrics['hierarchical_precision'])}",
+        f"        hR: {_format_yml_float(metrics['hierarchical_recall'])}",
+        f"        hF: {_format_yml_float(metrics['hierarchical_f1'])}",
+        "",
+        "      class_wise:",
+    ]
+    for label_name in label_names:
+        class_metrics = class_wise[label_name]
+        lines.extend(
+            [
+                f"        {label_name}:",
+                f"          hP: {_format_yml_float(class_metrics['hierarchical_precision'])}",
+                f"          hR: {_format_yml_float(class_metrics['hierarchical_recall'])}",
+                f"          hF: {_format_yml_float(class_metrics['hierarchical_f1'])}",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def write_system_evaluation_yml(
+    path: Path,
+    metrics: dict[str, Any],
+    label_names: list[str],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(format_system_evaluation_yml(metrics, label_names), encoding="utf-8")
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     output_root = Path(args.output_root).expanduser()
     model_dirs = [resolve_model_dir(model, output_root) for model in args.models]
@@ -528,16 +632,36 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         show_progress=True,
     )
     best_combination = combination_results[0]
-    best_model_dirs = [model_dirs[index] for index in best_combination["model_indices"]]
+    all_model_results = evaluate_ensemble(
+        val_records=val_records,
+        test_records=test_records,
+        logits_per_model=logits_per_model,
+        config=reference_config,
+        include_class_wise_hierarchical=True,
+    )
+    all_model_results.update(
+        {
+            "model_indices": list(range(len(model_dirs))),
+            "models": [str(model_dir) for model_dir in model_dirs],
+            "model_names": [model_dir.name for model_dir in model_dirs],
+            "short_model_names": [short_model_name(model_dir) for model_dir in model_dirs],
+            "size": len(model_dirs),
+            "validation_score": primary_metric_score(all_model_results["val"]),
+            "test_score": primary_metric_score(all_model_results["test"]),
+        }
+    )
+    all_model_results["combined_score"] = (
+        all_model_results["validation_score"] + all_model_results["test_score"]
+    )
 
     ensemble_root = Path(args.ensemble_root or output_root).expanduser()
     ensemble_dir = (
         Path(args.ensemble_dir).expanduser()
         if args.ensemble_dir is not None
-        else default_ensemble_dir(best_model_dirs, ensemble_root)
+        else default_ensemble_dir(model_dirs, ensemble_root)
     )
     ensemble_prediction_paths = write_ensembled_prediction_files(
-        model_dirs=best_model_dirs,
+        model_dirs=model_dirs,
         output_dir=ensemble_dir,
         label_names=label_names,
         prediction_filenames_by_dataset={
@@ -545,15 +669,46 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "BSD10k": args.prediction_filename,
         },
     )
-    results = dict(best_combination)
+    bsd2k_logits_per_model = [
+        load_logits_npz(
+            model_dir / PREDICTION_FILENAMES_BY_DATASET["BSD2k"],
+            label_names,
+        )
+        for model_dir in model_dirs
+    ]
+    bsd2k_logits = average_logits_by_file_id(bsd2k_logits_per_model, "BSD2k")
+    bsd2k_output_csv = (
+        Path(args.bsd2k_output_csv).expanduser()
+        if args.bsd2k_output_csv is not None
+        else ensemble_dir / BSD2K_PREDICTIONS_CSV_FILENAME
+    )
+    write_bsd2k_prediction_csv(
+        bsd2k_output_csv,
+        bsd2k_logits,
+        label_names,
+    )
+    system_evaluation_yml = (
+        Path(args.system_evaluation_yml).expanduser()
+        if args.system_evaluation_yml is not None
+        else ensemble_dir / SYSTEM_EVALUATION_YML_FILENAME
+    )
+    write_system_evaluation_yml(
+        system_evaluation_yml,
+        all_model_results["test"],
+        label_names,
+    )
+    results = dict(all_model_results)
     results.update(
         {
             "input_models": [str(model_dir) for model_dir in model_dirs],
             "best_combination": best_combination,
+            "all_models_combination": all_model_results,
             "combinations": combination_results,
             "prediction_filename": args.prediction_filename,
             "ensemble_dir": str(ensemble_dir),
             "ensemble_prediction_paths": ensemble_prediction_paths,
+            "bsd2k_prediction_csv": str(bsd2k_output_csv),
+            "system_evaluation_yml": str(system_evaluation_yml),
             "bsd10k_root": str(bsd10k_root),
             "ranking_metric": "val/hierarchical_f1",
             "split": {

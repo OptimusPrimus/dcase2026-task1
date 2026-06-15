@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,9 +15,11 @@ from dcase2026_task1.experiments.ensemble_predictions import (
     evaluate_ensemble,
     evaluate_model_combinations,
     format_combination_rankings,
+    format_system_evaluation_yml,
     label_names_from_config,
     load_logits_npz,
     short_model_name,
+    write_bsd2k_prediction_csv,
     write_ensembled_prediction_files,
 )
 
@@ -122,6 +125,35 @@ def test_write_ensembled_prediction_files_writes_all_dataset_npzs(tmp_path: Path
         logits = load_logits_npz(tmp_path / "ensemble_a__b" / filename, label_names)
         assert np.allclose(logits["1"], np.array([2.0, 4.0]))
         assert np.allclose(logits["2"], np.array([4.0, 6.0]))
+
+
+def test_write_bsd2k_prediction_csv_writes_top_predictions(tmp_path: Path) -> None:
+    output_path = tmp_path / "bsd2k_predictions.csv"
+
+    write_bsd2k_prediction_csv(
+        output_path,
+        {
+            "anon-002.wav": np.array([0.0, 3.0]),
+            "anon-001": np.array([4.0, 0.0]),
+        },
+        ["m-si", "fx-a"],
+    )
+
+    with output_path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert rows == [
+        {
+            "id": "anon-001",
+            "predicted_bst_second_level_class": "m-si",
+            "prediction_score": "0.9820137900",
+        },
+        {
+            "id": "anon-002.wav",
+            "predicted_bst_second_level_class": "fx-a",
+            "prediction_score": "0.9525741268",
+        },
+    ]
 
 
 def test_build_bsd10k_eval_records_uses_training_split_and_configured_limits() -> None:
@@ -268,3 +300,31 @@ def test_format_combination_rankings_prints_three_top_lists() -> None:
     assert "Top 5 systems by combined validation+test score" in output
     assert "rank  val_score  test_score  combined  size  models" in output
     assert output.count("\n   1  ") == 3
+
+
+def test_format_system_evaluation_yml_uses_submission_structure() -> None:
+    output = format_system_evaluation_yml(
+        {
+            "hierarchical_precision": 0.5844,
+            "hierarchical_recall": 0.6884,
+            "hierarchical_f1": 0.6324,
+            "class_wise_hierarchical": {
+                "m-si": {
+                    "hierarchical_precision": 0.7944,
+                    "hierarchical_recall": 0.8444,
+                    "hierarchical_f1": 0.8184,
+                },
+                "fx-a": {
+                    "hierarchical_precision": 0.7954,
+                    "hierarchical_recall": 0.8634,
+                    "hierarchical_f1": 0.8284,
+                },
+            },
+        },
+        ["m-si", "fx-a"],
+    )
+
+    assert output.startswith("# Submission information\n\nresults:\n")
+    assert "    bsd10k-v1.2:\n      overall:\n        hP: 0.584\n" in output
+    assert "        m-si:\n          hP: 0.794\n          hR: 0.844\n          hF: 0.818\n" in output
+    assert "        fx-a:\n          hP: 0.795\n          hR: 0.863\n          hF: 0.828\n" in output
