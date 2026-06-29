@@ -9,6 +9,7 @@ import torch
 from dcase2026_task1.models.audio_wrappers import (
     ArbitraryLengthAudioWrapper,
 )
+from dcase2026_task1.models.clap import SUMMARY_METADATA_KEY
 
 DEFAULT_CHECKPOINT_ARCHIVE_ALIAS = "m2d_clap_vit_base-80x1001p16x16-240128_AS-FT_enconly.zip"
 DEFAULT_CHECKPOINT_FILENAME = "weights_ep67it3124-0.48558.pth"
@@ -217,6 +218,64 @@ class ChunkedM2D(ArbitraryLengthAudioWrapper):
         )
 
 
+def _masked_mean_embedding_sequence(
+    embedding_sequence: torch.Tensor,
+    embedding_padding_mask: torch.Tensor | None,
+) -> torch.Tensor:
+    if embedding_padding_mask is None:
+        return embedding_sequence.mean(dim=1)
+    valid = (~embedding_padding_mask).unsqueeze(-1)
+    return (embedding_sequence * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
+
+
+class M2DTextEncoderEmbeddingModel(torch.nn.Module):
+    def __init__(
+        self,
+        m2d_model: torch.nn.Module,
+        text_encoder: torch.nn.Module,
+        *,
+        metadata_text_key: str = SUMMARY_METADATA_KEY,
+    ) -> None:
+        super().__init__()
+        self.m2d_model = m2d_model
+        self.text_encoder = text_encoder
+        self.metadata_text_key = metadata_text_key
+        self.output_dim = int(m2d_model.output_dim) + int(text_encoder.output_dim)
+
+    def forward(
+        self,
+        waveforms: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+        metadata: list[dict[str, object]] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        m2d_embeddings, m2d_padding_mask = self.m2d_model(
+            waveforms,
+            padding_mask,
+            metadata=metadata,
+        )
+        audio_embeddings = _masked_mean_embedding_sequence(
+            m2d_embeddings,
+            m2d_padding_mask,
+        )
+        text_embedding_sequence, text_padding_mask = self.text_encoder(
+            waveforms,
+            padding_mask,
+            metadata=metadata,
+        )
+        text_embeddings = _masked_mean_embedding_sequence(
+            text_embedding_sequence,
+            text_padding_mask,
+        )
+        text_embeddings = text_embeddings.to(dtype=audio_embeddings.dtype)
+        embeddings = torch.cat([audio_embeddings, text_embeddings], dim=-1).unsqueeze(1)
+        embedding_padding_mask = torch.zeros(
+            (waveforms.shape[0], 1),
+            dtype=torch.bool,
+            device=waveforms.device,
+        )
+        return embeddings, embedding_padding_mask
+
+
 def build_m2d_embedding_model(
     *,
     checkpoint_dir: str | Path,
@@ -262,13 +321,51 @@ def build_m2d_embedding_model(
     return model
 
 
+def build_m2d_text_encoder_embedding_model(
+    *,
+    checkpoint_dir: str | Path,
+    trust_checkpoint: bool,
+    sample_rate: int,
+    metadata_text_key: str = SUMMARY_METADATA_KEY,
+) -> M2DTextEncoderEmbeddingModel:
+    from dcase2026_task1.models.lclap import build_lclap_text_encoder
+
+    m2d_model = build_m2d_embedding_model(
+        checkpoint_dir=checkpoint_dir,
+        trust_checkpoint=trust_checkpoint,
+        sample_rate=sample_rate,
+    )
+    text_encoder = build_lclap_text_encoder(
+        checkpoint_dir=checkpoint_dir,
+        trust_checkpoint=trust_checkpoint,
+        metadata_text_key=metadata_text_key,
+    )
+    model = M2DTextEncoderEmbeddingModel(
+        m2d_model,
+        text_encoder,
+        metadata_text_key=metadata_text_key,
+    )
+    model.checkpoint_cfg = {
+        "arch": "m2d_te",
+        "sample_rate": DEFAULT_SAMPLE_RATE,
+        "m2d": getattr(m2d_model, "checkpoint_cfg", None),
+        "text_encoder": getattr(text_encoder, "checkpoint_cfg", None),
+        "audio_embedding_dim": int(m2d_model.output_dim),
+        "text_embedding_dim": int(text_encoder.output_dim),
+        "metadata_text_key": metadata_text_key,
+    }
+    return model
+
+
 __all__ = [
     "ChunkedM2D",
     "DEFAULT_CHECKPOINT_ARCHIVE_ALIAS",
     "DEFAULT_CHECKPOINT_FILENAME",
     "DEFAULT_MAX_AUDIO_SECONDS",
     "DEFAULT_SAMPLE_RATE",
+    "M2DTextEncoderEmbeddingModel",
     "build_m2d_embedding_model",
+    "build_m2d_text_encoder_embedding_model",
     "resolve_checkpoint_path",
     "validate_checkpoint_file",
 ]

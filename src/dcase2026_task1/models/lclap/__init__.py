@@ -98,7 +98,7 @@ def _wrap_float32_no_grad_method(module: torch.nn.Module, name: str) -> None:
     setattr(module, name, wrapped)
 
 
-class LAIONCLAPEmbeddingModel(torch.nn.Module):
+class LAIONCLAPBaseEncoder(torch.nn.Module):
     def __init__(
         self,
         clap_module: Any,
@@ -121,17 +121,11 @@ class LAIONCLAPEmbeddingModel(torch.nn.Module):
         self.output_dim = audio_embedding_dim + text_embedding_dim
         wrap_spectrogram_modules_float32(self.clap_module)
 
-    def forward(
+    def _audio_embeddings(
         self,
         waveforms: torch.Tensor,
-        padding_mask: torch.Tensor | None = None,
-        metadata: list[dict[str, Any]] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        metadata_texts = metadata_to_texts(
-            metadata,
-            batch_size=waveforms.shape[0],
-            metadata_text_key=self.metadata_text_key,
-        )
+        padding_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
         max_segment_samples = int(self.max_audio_seconds * self.sample_rate)
         segment_waveforms, segment_padding_mask, segment_batch_indices = split_waveforms_into_segments(
             waveforms,
@@ -146,18 +140,36 @@ class LAIONCLAPEmbeddingModel(torch.nn.Module):
             segment_batch_indices,
             batch_size=waveforms.shape[0],
         )
-        text_embeddings = self._text_embeddings_without_l2(
+        return audio_embeddings
+
+    def _text_embeddings(
+        self,
+        metadata: list[dict[str, Any]] | None,
+        *,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        metadata_texts = metadata_to_texts(
+            metadata,
+            batch_size=batch_size,
+            metadata_text_key=self.metadata_text_key,
+        )
+        return self._text_embeddings_without_l2(
             metadata_texts,
-            device=waveforms.device,
+            device=device,
         )
 
-        embeddings = torch.cat([audio_embeddings, text_embeddings], dim=-1).unsqueeze(1)
-        embedding_padding_mask = torch.zeros(
-            (waveforms.shape[0], 1),
+    def _single_token_padding_mask(
+        self,
+        *,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        return torch.zeros(
+            (batch_size, 1),
             dtype=torch.bool,
-            device=waveforms.device,
+            device=device,
         )
-        return embeddings, embedding_padding_mask
 
     def _audio_embeddings_from_segments(self, segment_waveforms: torch.Tensor) -> torch.Tensor:
         segment_waveforms = segment_waveforms.to(dtype=torch.float32)
@@ -245,6 +257,100 @@ class LAIONCLAPEmbeddingModel(torch.nn.Module):
         return torch.as_tensor(value, dtype=torch.float32, device=device)
 
 
+class LAIONCLAPEmbeddingModel(LAIONCLAPBaseEncoder):
+    def forward(
+        self,
+        waveforms: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+        metadata: list[dict[str, Any]] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        audio_embeddings = self._audio_embeddings(waveforms, padding_mask)
+        text_embeddings = self._text_embeddings(
+            metadata,
+            batch_size=waveforms.shape[0],
+            device=waveforms.device,
+        )
+
+        embeddings = torch.cat([audio_embeddings, text_embeddings], dim=-1).unsqueeze(1)
+        embedding_padding_mask = self._single_token_padding_mask(
+            batch_size=waveforms.shape[0],
+            device=waveforms.device,
+        )
+        return embeddings, embedding_padding_mask
+
+
+class LAIONCLAPAudioEncoder(LAIONCLAPBaseEncoder):
+    def __init__(
+        self,
+        clap_module: Any,
+        *,
+        sample_rate: int,
+        max_audio_seconds: float = DEFAULT_MAX_AUDIO_SECONDS,
+        audio_embedding_dim: int = DEFAULT_AUDIO_EMBEDDING_DIM,
+        quantize_audio: bool = DEFAULT_QUANTIZE_AUDIO,
+    ) -> None:
+        super().__init__(
+            clap_module,
+            sample_rate=sample_rate,
+            max_audio_seconds=max_audio_seconds,
+            audio_embedding_dim=audio_embedding_dim,
+            text_embedding_dim=0,
+            quantize_audio=quantize_audio,
+        )
+        self.output_dim = audio_embedding_dim
+
+    def forward(
+        self,
+        waveforms: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+        metadata: list[dict[str, Any]] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        del metadata
+        embeddings = self._audio_embeddings(waveforms, padding_mask).unsqueeze(1)
+        embedding_padding_mask = self._single_token_padding_mask(
+            batch_size=waveforms.shape[0],
+            device=waveforms.device,
+        )
+        return embeddings, embedding_padding_mask
+
+
+class LAIONCLAPTextEncoder(LAIONCLAPBaseEncoder):
+    def __init__(
+        self,
+        clap_module: Any,
+        *,
+        sample_rate: int = DEFAULT_SAMPLE_RATE,
+        text_embedding_dim: int = DEFAULT_TEXT_EMBEDDING_DIM,
+        metadata_text_key: str = SUMMARY_METADATA_KEY,
+    ) -> None:
+        super().__init__(
+            clap_module,
+            sample_rate=sample_rate,
+            audio_embedding_dim=0,
+            text_embedding_dim=text_embedding_dim,
+            metadata_text_key=metadata_text_key,
+        )
+        self.output_dim = text_embedding_dim
+
+    def forward(
+        self,
+        waveforms: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+        metadata: list[dict[str, Any]] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        del padding_mask
+        embeddings = self._text_embeddings(
+            metadata,
+            batch_size=waveforms.shape[0],
+            device=waveforms.device,
+        ).unsqueeze(1)
+        embedding_padding_mask = self._single_token_padding_mask(
+            batch_size=waveforms.shape[0],
+            device=waveforms.device,
+        )
+        return embeddings, embedding_padding_mask
+
+
 def build_lclap_embedding_model(
     *,
     checkpoint_dir: str | Path,
@@ -295,6 +401,104 @@ def build_lclap_embedding_model(
         "enable_fusion": enable_fusion,
         "amodel": amodel,
         "metadata_text_key": metadata_text_key,
+    }
+    return model
+
+
+def build_lclap_text_encoder(
+    *,
+    checkpoint_dir: str | Path,
+    trust_checkpoint: bool,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    checkpoint_alias: str = DEFAULT_CHECKPOINT_ALIAS,
+    load_checkpoint: bool = True,
+    enable_fusion: bool = DEFAULT_ENABLE_FUSION,
+    amodel: str | None = None,
+    metadata_text_key: str = SUMMARY_METADATA_KEY,
+    arch: str = "lclap_text",
+) -> LAIONCLAPTextEncoder:
+    clap_module = _build_laion_clap_module(enable_fusion=enable_fusion, amodel=amodel)
+    checkpoint_path = None
+    if load_checkpoint:
+        if not trust_checkpoint:
+            raise ValueError(
+                "LAION-CLAP checkpoints require checkpoint deserialization. "
+                "Re-run with --trust-checkpoint only if the checkpoint source is trusted."
+            )
+        checkpoint_path = resolve_checkpoint_path(
+            checkpoint_dir=checkpoint_dir,
+            checkpoint_alias=checkpoint_alias,
+        )
+        if checkpoint_path is None:
+            clap_module.load_ckpt()
+        else:
+            clap_module.load_ckpt(str(checkpoint_path))
+
+    model = LAIONCLAPTextEncoder(
+        clap_module,
+        sample_rate=sample_rate,
+        metadata_text_key=metadata_text_key,
+    )
+    model.checkpoint_cfg = {
+        "arch": arch,
+        "sample_rate": sample_rate,
+        "text_projection_dim": DEFAULT_TEXT_EMBEDDING_DIM,
+        "checkpoint_alias": checkpoint_alias,
+        "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
+        "checkpoint_loaded": load_checkpoint,
+        "enable_fusion": enable_fusion,
+        "amodel": amodel,
+        "metadata_text_key": metadata_text_key,
+    }
+    return model
+
+
+def build_lclap_audio_encoder(
+    *,
+    checkpoint_dir: str | Path,
+    trust_checkpoint: bool,
+    sample_rate: int,
+    checkpoint_alias: str = DEFAULT_CHECKPOINT_ALIAS,
+    load_checkpoint: bool = True,
+    enable_fusion: bool = DEFAULT_ENABLE_FUSION,
+    amodel: str | None = None,
+    arch: str = "lclap_audio",
+) -> LAIONCLAPAudioEncoder:
+    if sample_rate != DEFAULT_SAMPLE_RATE:
+        raise ValueError(
+            f"LAION-CLAP expects sample_rate={DEFAULT_SAMPLE_RATE}, got {sample_rate}."
+        )
+
+    clap_module = _build_laion_clap_module(enable_fusion=enable_fusion, amodel=amodel)
+    checkpoint_path = None
+    if load_checkpoint:
+        if not trust_checkpoint:
+            raise ValueError(
+                "LAION-CLAP checkpoints require checkpoint deserialization. "
+                "Re-run with --trust-checkpoint only if the checkpoint source is trusted."
+            )
+        checkpoint_path = resolve_checkpoint_path(
+            checkpoint_dir=checkpoint_dir,
+            checkpoint_alias=checkpoint_alias,
+        )
+        if checkpoint_path is None:
+            clap_module.load_ckpt()
+        else:
+            clap_module.load_ckpt(str(checkpoint_path))
+
+    model = LAIONCLAPAudioEncoder(
+        clap_module,
+        sample_rate=sample_rate,
+    )
+    model.checkpoint_cfg = {
+        "arch": arch,
+        "sample_rate": DEFAULT_SAMPLE_RATE,
+        "audio_projection_dim": DEFAULT_AUDIO_EMBEDDING_DIM,
+        "checkpoint_alias": checkpoint_alias,
+        "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
+        "checkpoint_loaded": load_checkpoint,
+        "enable_fusion": enable_fusion,
+        "amodel": amodel,
     }
     return model
 
@@ -366,8 +570,13 @@ __all__ = [
     "DEFAULT_MAX_AUDIO_SECONDS",
     "DEFAULT_SAMPLE_RATE",
     "Float32AutocastDisabledModule",
+    "LAIONCLAPAudioEncoder",
+    "LAIONCLAPBaseEncoder",
     "LAIONCLAPEmbeddingModel",
+    "LAIONCLAPTextEncoder",
+    "build_lclap_audio_encoder",
     "build_lclap_embedding_model",
+    "build_lclap_text_encoder",
     "int16_quantize_audio",
     "resolve_checkpoint_path",
     "wrap_spectrogram_modules_float32",

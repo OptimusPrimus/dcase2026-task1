@@ -3,7 +3,6 @@ from __future__ import annotations
 from argparse import Namespace
 import json
 from pathlib import Path
-import random
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
@@ -19,10 +18,8 @@ from dcase2026_task1.data.splits import (
 )
 from dcase2026_task1.experiments.training import (
     DEFAULT_EMBEDDING_MODEL,
-    LLMPriorNoiseConfig,
     WaveformClassificationDataset,
     WaveformInferenceDataset,
-    apply_llm_label_prior_noise,
     apply_hard_llm_constraints,
     apply_soft_llm_constraints,
     build_class_frequency_loss_weights,
@@ -64,6 +61,7 @@ from dcase2026_task1.models.audio_wrappers import (
 from dcase2026_task1.models.M2D import (
     DEFAULT_CHECKPOINT_ARCHIVE_ALIAS as M2D_DEFAULT_CHECKPOINT_ARCHIVE_ALIAS,
     DEFAULT_CHECKPOINT_FILENAME as M2D_DEFAULT_CHECKPOINT_FILENAME,
+    M2DTextEncoderEmbeddingModel,
     _build_m2d_token_padding_mask,
     _concatenate_segment_outputs,
     resolve_checkpoint_path as resolve_m2d_checkpoint_path,
@@ -82,7 +80,9 @@ from dcase2026_task1.models.clap import (
 )
 from dcase2026_task1.models.clap.passt import CutInputIntoSegmentsWrapper
 from dcase2026_task1.models.lclap import (
+    LAIONCLAPAudioEncoder,
     LAIONCLAPEmbeddingModel,
+    LAIONCLAPTextEncoder,
     build_lclap_embedding_model,
     int16_quantize_audio,
 )
@@ -141,11 +141,6 @@ def test_parser_seed_defaults_to_none() -> None:
     assert args.save_checkpoints is False
     assert args.early_stopping_patience == 10
     assert args.label_smoothing == 0.0
-    assert args.llm_prior_noise_p_swap == 0.0
-    assert args.llm_prior_noise_p_drop == 0.0
-    assert args.llm_prior_noise_p_add == 0.0
-    assert args.llm_prior_noise_p_move == 0.0
-    assert args.llm_prior_noise_move_fraction == 0.1
     assert not hasattr(args, "checkpoint_alias")
 
 
@@ -205,8 +200,11 @@ def test_resolve_embedding_sample_rate_supports_embedding_models() -> None:
     assert resolve_embedding_sample_rate("clap") == 32000
     assert resolve_embedding_sample_rate("clap_kw") == 32000
     assert resolve_embedding_sample_rate("lclap") == 48000
+    assert resolve_embedding_sample_rate("lclap_audio") == 48000
+    assert resolve_embedding_sample_rate("lclap_text") == 48000
     assert resolve_embedding_sample_rate("lclap_kw") == 48000
     assert resolve_embedding_sample_rate("m2d") == 16000
+    assert resolve_embedding_sample_rate("m2d_te") == 16000
     assert resolve_embedding_sample_rate("passt") == 32000
 
 
@@ -882,6 +880,54 @@ def test_build_embedding_model_m2d_accepts_metadata() -> None:
     assert model.received_metadata == [{"title": "x"}, {"title": "y"}]
 
 
+def test_build_embedding_model_m2d_te_accepts_metadata() -> None:
+    args = Namespace(
+        embedding_model="m2d_te",
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+    )
+
+    class FakeM2DTE(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.output_dim = 7
+            self.received_metadata = None
+
+        def forward(self, waveforms, padding_mask=None, metadata=None):
+            self.received_metadata = metadata
+            return (
+                torch.ones((waveforms.shape[0], 1, self.output_dim)),
+                torch.zeros((waveforms.shape[0], 1), dtype=torch.bool),
+            )
+
+    fake_model = FakeM2DTE()
+    with patch(
+        "dcase2026_task1.experiments.training.build_m2d_text_encoder_embedding_model",
+        return_value=fake_model,
+    ) as build_m2d_te:
+        model = build_embedding_model(args, sample_rate=16000)
+        embedding_sequence, embedding_padding_mask = model(
+            torch.ones((2, 8)),
+            torch.zeros((2, 8), dtype=torch.bool),
+            metadata=[
+                {"metadata_summary": "A metal impact."},
+                {"metadata_summary": "Rain and water."},
+            ],
+        )
+
+    build_m2d_te.assert_called_once_with(
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+        sample_rate=16000,
+    )
+    assert embedding_sequence.shape == (2, 1, 7)
+    assert torch.equal(embedding_padding_mask, torch.zeros((2, 1), dtype=torch.bool))
+    assert model.received_metadata == [
+        {"metadata_summary": "A metal impact."},
+        {"metadata_summary": "Rain and water."},
+    ]
+
+
 def test_build_embedding_model_clap_accepts_metadata() -> None:
     args = Namespace(
         embedding_model="clap",
@@ -996,6 +1042,102 @@ def test_build_embedding_model_lclap_accepts_metadata() -> None:
         sample_rate=48000,
     )
     assert embedding_sequence.shape == (2, 1, 8)
+    assert torch.equal(embedding_padding_mask, torch.zeros((2, 1), dtype=torch.bool))
+    assert model.received_metadata == [
+        {"metadata_summary": "A metal impact."},
+        {"metadata_summary": "Rain and water."},
+    ]
+
+
+def test_build_embedding_model_lclap_audio_accepts_metadata() -> None:
+    args = Namespace(
+        embedding_model="lclap_audio",
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+    )
+
+    class FakeLAIONCLAPAudio(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.output_dim = 4
+            self.received_metadata = None
+
+        def forward(self, waveforms, padding_mask=None, metadata=None):
+            self.received_metadata = metadata
+            return (
+                torch.ones((waveforms.shape[0], 1, self.output_dim)),
+                torch.zeros((waveforms.shape[0], 1), dtype=torch.bool),
+            )
+
+    fake_model = FakeLAIONCLAPAudio()
+    with patch(
+        "dcase2026_task1.experiments.training.build_lclap_audio_encoder",
+        return_value=fake_model,
+    ) as build_lclap_audio:
+        model = build_embedding_model(args, sample_rate=48000)
+        embedding_sequence, embedding_padding_mask = model(
+            torch.ones((2, 8)),
+            torch.zeros((2, 8), dtype=torch.bool),
+            metadata=[
+                {"metadata_summary": "A metal impact."},
+                {"metadata_summary": "Rain and water."},
+            ],
+        )
+
+    build_lclap_audio.assert_called_once_with(
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+        sample_rate=48000,
+    )
+    assert embedding_sequence.shape == (2, 1, 4)
+    assert torch.equal(embedding_padding_mask, torch.zeros((2, 1), dtype=torch.bool))
+    assert model.received_metadata == [
+        {"metadata_summary": "A metal impact."},
+        {"metadata_summary": "Rain and water."},
+    ]
+
+
+def test_build_embedding_model_lclap_text_accepts_metadata() -> None:
+    args = Namespace(
+        embedding_model="lclap_text",
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+    )
+
+    class FakeLAIONCLAPText(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.output_dim = 4
+            self.received_metadata = None
+
+        def forward(self, waveforms, padding_mask=None, metadata=None):
+            self.received_metadata = metadata
+            return (
+                torch.ones((waveforms.shape[0], 1, self.output_dim)),
+                torch.zeros((waveforms.shape[0], 1), dtype=torch.bool),
+            )
+
+    fake_model = FakeLAIONCLAPText()
+    with patch(
+        "dcase2026_task1.experiments.training.build_lclap_text_encoder",
+        return_value=fake_model,
+    ) as build_lclap_text:
+        model = build_embedding_model(args, sample_rate=48000)
+        embedding_sequence, embedding_padding_mask = model(
+            torch.ones((2, 8)),
+            torch.zeros((2, 8), dtype=torch.bool),
+            metadata=[
+                {"metadata_summary": "A metal impact."},
+                {"metadata_summary": "Rain and water."},
+            ],
+        )
+
+    build_lclap_text.assert_called_once_with(
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+        sample_rate=48000,
+    )
+    assert embedding_sequence.shape == (2, 1, 4)
     assert torch.equal(embedding_padding_mask, torch.zeros((2, 1), dtype=torch.bool))
     assert model.received_metadata == [
         {"metadata_summary": "A metal impact."},
@@ -1295,6 +1437,97 @@ def test_lclap_embedding_model_segments_audio_and_concatenates_text() -> None:
             [
                 [1.5, 1.5, 10.0, 20.0],
                 [3.0, 3.0, 30.0, 40.0],
+            ]
+        ),
+    )
+    assert torch.equal(padding_mask, torch.zeros((2, 1), dtype=torch.bool))
+
+
+def test_lclap_audio_encoder_segments_audio_only() -> None:
+    class FakeLAIONModule:
+        def __init__(self) -> None:
+            self.audio_shape = None
+
+        def get_audio_embedding_from_data(self, x, use_tensor=True):
+            self.audio_shape = x.shape
+            return torch.stack(
+                [
+                    torch.full((2,), float(index + 1), dtype=torch.float32)
+                    for index in range(x.shape[0])
+                ]
+            )
+
+    clap_module = FakeLAIONModule()
+    model = LAIONCLAPAudioEncoder(
+        clap_module,
+        sample_rate=4,
+        max_audio_seconds=2.5,
+        audio_embedding_dim=2,
+        quantize_audio=False,
+    )
+
+    embeddings, padding_mask = model(
+        torch.ones((2, 13)),
+        torch.tensor(
+            [
+                [False] * 13,
+                [False] * 6 + [True] * 7,
+            ]
+        ),
+        metadata=[{"metadata_summary": "ignored"}, {"metadata_summary": "ignored"}],
+    )
+
+    assert clap_module.audio_shape == torch.Size([3, 10])
+    assert model.output_dim == 2
+    assert torch.equal(
+        embeddings[:, 0],
+        torch.tensor(
+            [
+                [1.5, 1.5],
+                [3.0, 3.0],
+            ]
+        ),
+    )
+    assert torch.equal(padding_mask, torch.zeros((2, 1), dtype=torch.bool))
+
+
+def test_lclap_text_encoder_uses_metadata_only_without_l2_normalization() -> None:
+    class FakeLAIONModule:
+        def __init__(self) -> None:
+            self.texts = None
+
+        def get_text_embedding(self, texts, use_tensor=True):
+            self.texts = texts
+            return torch.tensor([[3.0, 4.0], [6.0, 8.0]])
+
+    clap_module = FakeLAIONModule()
+    model = LAIONCLAPTextEncoder(
+        clap_module,
+        text_embedding_dim=2,
+    )
+
+    embeddings, padding_mask = model(
+        torch.ones((2, 13)),
+        torch.tensor(
+            [
+                [False] * 13,
+                [False] * 6 + [True] * 7,
+            ]
+        ),
+        metadata=[
+            {"metadata_summary": "A metal hit."},
+            {"metadata_summary": "Rain and water."},
+        ],
+    )
+
+    assert clap_module.texts == ["A metal hit.", "Rain and water."]
+    assert model.output_dim == 2
+    assert torch.equal(
+        embeddings[:, 0],
+        torch.tensor(
+            [
+                [3.0, 4.0],
+                [6.0, 8.0],
             ]
         ),
     )
@@ -1611,6 +1844,79 @@ def test_m2d_aggregate_outputs_concatenates_segment_time_axis() -> None:
     )
 
 
+def test_m2d_te_concatenates_pooled_m2d_and_raw_text_embeddings() -> None:
+    class FakeM2D(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.output_dim = 2
+            self.received_metadata = None
+
+        def forward(self, waveforms, padding_mask=None, metadata=None):
+            self.received_metadata = metadata
+            return (
+                torch.tensor(
+                    [
+                        [[1.0, 10.0], [3.0, 30.0], [100.0, 1000.0]],
+                        [[5.0, 50.0], [7.0, 70.0], [0.0, 0.0]],
+                    ],
+                    device=waveforms.device,
+                ),
+                torch.tensor(
+                    [
+                        [False, False, True],
+                        [False, False, True],
+                    ],
+                    device=waveforms.device,
+                ),
+            )
+
+    class FakeTextEncoder(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.output_dim = 2
+            self.received_metadata = None
+
+        def forward(self, waveforms, padding_mask=None, metadata=None):
+            self.received_metadata = metadata
+            return (
+                torch.tensor([[3.0, 4.0], [6.0, 8.0]], device=waveforms.device).unsqueeze(1),
+                torch.zeros((waveforms.shape[0], 1), dtype=torch.bool, device=waveforms.device),
+            )
+
+    m2d = FakeM2D()
+    text_encoder = FakeTextEncoder()
+    model = M2DTextEncoderEmbeddingModel(m2d, text_encoder)
+
+    embeddings, padding_mask = model(
+        torch.ones((2, 8)),
+        torch.zeros((2, 8), dtype=torch.bool),
+        metadata=[
+            {"metadata_summary": "A metal hit."},
+            {"metadata_summary": "Rain and water."},
+        ],
+    )
+
+    assert text_encoder.received_metadata == [
+        {"metadata_summary": "A metal hit."},
+        {"metadata_summary": "Rain and water."},
+    ]
+    assert m2d.received_metadata == [
+        {"metadata_summary": "A metal hit."},
+        {"metadata_summary": "Rain and water."},
+    ]
+    assert embeddings.shape == (2, 1, 4)
+    assert torch.equal(
+        embeddings[:, 0],
+        torch.tensor(
+            [
+                [2.0, 20.0, 3.0, 4.0],
+                [6.0, 60.0, 6.0, 8.0],
+            ]
+        ),
+    )
+    assert torch.equal(padding_mask, torch.zeros((2, 1), dtype=torch.bool))
+
+
 def test_m2d_token_padding_mask_marks_only_valid_time_steps() -> None:
     fake_model = SimpleNamespace(
         cfg=SimpleNamespace(hop_size=160, input_size=[80, 1001]),
@@ -1830,75 +2136,6 @@ def test_build_llm_prior_weights_matches_filtered_normalized_metadata_probabilit
 
     assert torch.allclose(weights[0], torch.tensor([0.75, 0.25, 0.0]))
     assert torch.allclose(weights[1], torch.tensor([0.0, 0.0, 0.0]))
-
-
-def test_llm_prior_noise_config_rejects_invalid_probabilities() -> None:
-    with np.testing.assert_raises(ValueError):
-        LLMPriorNoiseConfig(p_swap=1.5)
-
-
-def test_apply_llm_label_prior_noise_swaps_two_predicted_probabilities() -> None:
-    noisy_prior = apply_llm_label_prior_noise(
-        np.array([0.6, 0.3, 0.1, 0.0]),
-        LLMPriorNoiseConfig(p_swap=1.0),
-        rng=random.Random(0),
-    )
-
-    assert np.allclose(noisy_prior, np.array([0.3, 0.6, 0.1, 0.0]))
-
-
-def test_apply_llm_label_prior_noise_drops_one_prediction_when_more_than_two_exist() -> None:
-    noisy_prior = apply_llm_label_prior_noise(
-        np.array([0.6, 0.3, 0.1, 0.0]),
-        LLMPriorNoiseConfig(p_drop=1.0),
-        rng=random.Random(0),
-    )
-
-    assert np.allclose(noisy_prior, np.array([6.0 / 7.0, 0.0, 1.0 / 7.0, 0.0]))
-
-
-def test_apply_llm_label_prior_noise_adds_previously_unpredicted_event() -> None:
-    noisy_prior = apply_llm_label_prior_noise(
-        np.array([0.75, 0.25, 0.0]),
-        LLMPriorNoiseConfig(p_add=1.0),
-        rng=random.Random(0),
-    )
-
-    assert np.allclose(noisy_prior, np.array([0.5, 1.0 / 6.0, 1.0 / 3.0]))
-
-
-def test_apply_llm_label_prior_noise_moves_probability_between_predictions() -> None:
-    noisy_prior = apply_llm_label_prior_noise(
-        np.array([0.6, 0.3, 0.1]),
-        LLMPriorNoiseConfig(p_move=1.0, move_fraction=0.1),
-        rng=random.Random(0),
-    )
-
-    assert np.allclose(noisy_prior, np.array([0.63, 0.27, 0.1]))
-
-
-def test_build_llm_prior_weights_applies_noise_only_when_requested() -> None:
-    metadata = [
-        {
-            "metadata_class_probabilities": [
-                {"label": "m-sp", "probability": 0.6},
-                {"label": "fx-a", "probability": 0.3},
-                {"label": "ss-n", "probability": 0.1},
-            ]
-        }
-    ]
-    id2label = {0: "m-sp", 1: "fx-a", 2: "ss-n"}
-
-    clean_weights = build_llm_prior_weights(metadata=metadata, id2label=id2label)
-    noisy_weights = build_llm_prior_weights(
-        metadata=metadata,
-        id2label=id2label,
-        noise_config=LLMPriorNoiseConfig(p_swap=1.0),
-        rng=random.Random(0),
-    )
-
-    assert torch.allclose(clean_weights[0], torch.tensor([0.6, 0.3, 0.1]))
-    assert torch.allclose(noisy_weights[0], torch.tensor([0.3, 0.6, 0.1]))
 
 
 def test_build_prediction_head_is_multilayer() -> None:
