@@ -68,6 +68,7 @@ DEFAULT_OUTPUT_ROOT = (
 )
 
 DEFAULT_EMBEDDING_MODEL = "beats"
+DEFAULT_LLM_EMBEDDING_DIM = 512
 PSEUDO_LABEL_FILENAMES = {
     "BSD10k": "bsd10k_logits.npz",
     "BSD35k-CS": "bsd35k_cs_logits.npz",
@@ -80,6 +81,7 @@ EMBEDDING_SAMPLE_RATES = {
     "lclap_audio": 48000,
     "lclap_text": 48000,
     "lclap_kw": 48000,
+    "llm": 16000,
     "m2d": 16000,
     "m2d_te": 16000,
     "passt": 32000,
@@ -104,6 +106,46 @@ class AudioEmbeddingModel(Protocol):
         metadata: list[dict[str, Any]] | None = None,
     ) -> tuple[Any, Any]:
         ...
+
+
+class LLMPriorEmbeddingModel(torch.nn.Module):
+    def __init__(
+        self,
+        id2label: dict[int, str],
+        *,
+        output_dim: int = DEFAULT_LLM_EMBEDDING_DIM,
+    ) -> None:
+        super().__init__()
+        self.id2label = dict(id2label)
+        self.output_dim = output_dim
+        self.class_embedding_bank = torch.nn.Embedding(len(self.id2label), output_dim)
+        self.checkpoint_cfg = {
+            "arch": "llm",
+            "output_dim": output_dim,
+        }
+
+    def forward(
+        self,
+        waveforms: Any,
+        padding_mask: Any | None = None,
+        metadata: list[dict[str, Any]] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        batch_size = waveforms.shape[0]
+        weights = build_llm_prior_weights(
+            metadata,
+            id2label=self.id2label,
+            device=self.class_embedding_bank.weight.device,
+            dtype=self.class_embedding_bank.weight.dtype,
+        )
+        if weights.shape[0] == 0:
+            weights = torch.zeros(
+                (batch_size, len(self.id2label)),
+                device=self.class_embedding_bank.weight.device,
+                dtype=self.class_embedding_bank.weight.dtype,
+            )
+        features = weights @ self.class_embedding_bank.weight
+        padding = torch.zeros((features.shape[0], 1), device=features.device, dtype=torch.bool)
+        return features.unsqueeze(1), padding
 
 
 class WaveformClassificationDataset:
@@ -545,7 +587,12 @@ def resolve_seed(seed: int | None) -> int:
 def build_embedding_model(
     args: argparse.Namespace,
     sample_rate: int,
+    id2label: dict[int, str] | None = None,
 ) -> AudioEmbeddingModel:
+    if args.embedding_model == "llm":
+        if id2label is None:
+            raise ValueError("id2label is required for the llm embedding model.")
+        return LLMPriorEmbeddingModel(id2label=id2label)
     if args.embedding_model == "beats":
         return build_beats_embedding_model(
             checkpoint_dir=args.checkpoint_dir,
@@ -1268,6 +1315,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             self.embedding_model = build_embedding_model(
                 args,
                 sample_rate=sample_rate,
+                id2label=id2label,
             )
             self.embedding_checkpoint_cfg = getattr(self.embedding_model, "checkpoint_cfg", None)
 

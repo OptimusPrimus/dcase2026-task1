@@ -203,6 +203,7 @@ def test_resolve_embedding_sample_rate_supports_embedding_models() -> None:
     assert resolve_embedding_sample_rate("lclap_audio") == 48000
     assert resolve_embedding_sample_rate("lclap_text") == 48000
     assert resolve_embedding_sample_rate("lclap_kw") == 48000
+    assert resolve_embedding_sample_rate("llm") == 16000
     assert resolve_embedding_sample_rate("m2d") == 16000
     assert resolve_embedding_sample_rate("m2d_te") == 16000
     assert resolve_embedding_sample_rate("passt") == 32000
@@ -1168,6 +1169,61 @@ def test_build_embedding_model_lclap_kw_uses_keyword_metadata() -> None:
         arch="lclap_kw",
     )
     assert model is fake_model
+
+
+def test_build_embedding_model_llm_uses_metadata_prior_class_embeddings() -> None:
+    args = Namespace(
+        embedding_model="llm",
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+    )
+    id2label = {0: "m-sp", 1: "fx-a", 2: "ss-n"}
+
+    model = build_embedding_model(args, sample_rate=16000, id2label=id2label)
+    with torch.no_grad():
+        model.class_embedding_bank.weight.zero_()
+        model.class_embedding_bank.weight[:, :3] = torch.tensor(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [0.0, 0.0, 3.0],
+            ]
+        )
+
+    embedding_sequence, embedding_padding_mask = model(
+        torch.ones((2, 8)),
+        torch.zeros((2, 8), dtype=torch.bool),
+        metadata=[
+            {
+                "metadata_class_probabilities": [
+                    {"label": "m-sp", "probability": 3.0},
+                    {"label": "fx-a", "probability": 1.0},
+                ]
+            },
+            {"metadata_class_probabilities": None},
+        ],
+    )
+
+    assert model.output_dim == 512
+    assert embedding_sequence.shape == (2, 1, 512)
+    assert torch.equal(embedding_padding_mask, torch.zeros((2, 1), dtype=torch.bool))
+    assert torch.allclose(embedding_sequence[0, 0, :3], torch.tensor([0.75, 0.5, 0.0]))
+    assert torch.allclose(embedding_sequence[1, 0], torch.zeros(512))
+
+
+def test_build_embedding_model_llm_requires_labels() -> None:
+    args = Namespace(
+        embedding_model="llm",
+        checkpoint_dir="/tmp/checkpoints",
+        trust_checkpoint=True,
+    )
+
+    try:
+        build_embedding_model(args, sample_rate=16000)
+    except ValueError as exc:
+        assert "id2label is required" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for llm embedding model without id2label.")
 
 
 def test_clap_metadata_text_uses_metadata_summary() -> None:
