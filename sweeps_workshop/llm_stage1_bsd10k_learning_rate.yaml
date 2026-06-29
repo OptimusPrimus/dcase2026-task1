@@ -30,7 +30,7 @@ command:
   - dcase2026_task1.experiments.training
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
-  - --embedding-model=lclap_audio
+  - --embedding-model=llm
   - --use-llm-prior-embedding-fusion
   - --batch-size=18
   - ${args}
