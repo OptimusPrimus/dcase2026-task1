@@ -30,7 +30,7 @@ command:
   - dcase2026_task1.experiments.training
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
-  - --embedding-model=lclap_audio
+  - --embedding-model=m2d
   - --batch-size=18
   - --save-checkpoints
   - ${args}
