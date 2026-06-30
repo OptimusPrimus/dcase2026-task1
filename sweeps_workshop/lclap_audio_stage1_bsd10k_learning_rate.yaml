@@ -8,7 +8,9 @@ metric:
 
 parameters:
   learning_rate:
-    value: 4e-6
+    distribution: log_uniform_values
+    min: !!float 4.00e-6
+    max: !!float 4.01e-6
   weight_decay:
     value: 0.01
   warmup_epochs:
