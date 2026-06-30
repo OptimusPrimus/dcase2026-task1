@@ -1,0 +1,36 @@
+program: src/dcase2026_task1/experiments/training.py
+project: dcase2026-task1
+method: random
+run_cap: 20
+metric:
+  name: val/hierarchical_f1
+  goal: maximize
+
+parameters:
+  learning_rate:
+    distribution: log_uniform_values
+    min: !!float 5e-6
+    max: !!float 1e-3
+  weight_decay:
+    value: 0.01
+  warmup_epochs:
+    value: 1
+  lr_decay_start_epoch:
+    value: 1
+  min_learning_rate:
+    value: !!float 0.0
+  max_epochs:
+    value: 30
+
+
+command:
+  - ${env}
+  - ${interpreter}
+  - -m
+  - dcase2026_task1.experiments.training
+  - --wandb-project=dcase2026-task1
+  - --wandb-mode=online
+  - --embedding-model=lclap_audio
+  - --batch-size=18
+  - --save-checkpoints
+  - ${args}
