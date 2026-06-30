@@ -1,7 +1,7 @@
 program: src/dcase2026_task1/experiments/training.py
 project: dcase2026-task1
 method: random
-run_cap: 100
+run_cap: 20
 metric:
   name: val/hierarchical_f1
   goal: maximize
@@ -9,8 +9,8 @@ metric:
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: !!float 3e-6
-    max: !!float 1e-3
+    min: !!float 1e-6
+    max: !!float 5e-6
   weight_decay:
     value: 0.01
   warmup_epochs:
@@ -30,6 +30,8 @@ command:
   - dcase2026_task1.experiments.training
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
-  - --embedding-model=llm
+  - --embedding-model=m2d
+  - --use-llm-prior-embedding-fusion
   - --batch-size=18
+  - --save-checkpoints
   - ${args}
