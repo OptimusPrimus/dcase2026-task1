@@ -141,6 +141,8 @@ def test_parser_seed_defaults_to_none() -> None:
     assert args.save_checkpoints is False
     assert args.early_stopping_patience == 10
     assert args.label_smoothing == 0.0
+    assert args.head_hidden_layers == 1
+    assert args.head_hidden_dim is None
     assert not hasattr(args, "checkpoint_alias")
 
 
@@ -2206,6 +2208,40 @@ def test_build_prediction_head_is_multilayer() -> None:
     assert outputs.shape == (2, 3)
 
 
+def test_build_prediction_head_supports_configurable_hidden_layers() -> None:
+    head = build_prediction_head(
+        input_dim=4,
+        output_dim=3,
+        dropout=0.1,
+        hidden_layers=2,
+        hidden_dim=5,
+    )
+    outputs = head(torch.ones((2, 4)))
+
+    assert isinstance(head, torch.nn.Sequential)
+    assert head[0].in_features == 4
+    assert head[0].out_features == 5
+    assert head[3].in_features == 5
+    assert head[3].out_features == 5
+    assert head[6].in_features == 5
+    assert head[6].out_features == 3
+    assert outputs.shape == (2, 3)
+
+
+def test_build_prediction_head_supports_no_hidden_layers() -> None:
+    head = build_prediction_head(
+        input_dim=4,
+        output_dim=3,
+        dropout=0.1,
+        hidden_layers=0,
+        hidden_dim=5,
+    )
+
+    assert len(head) == 1
+    assert head[0].in_features == 4
+    assert head[0].out_features == 3
+
+
 def test_epochs_to_update_steps_converts_fractional_epochs() -> None:
     assert epochs_to_update_steps(0.0, 10) == 0
     assert epochs_to_update_steps(1.5, 10) == 15
@@ -2347,6 +2383,8 @@ def test_run_experiment_tests_last_trained_parameters(tmp_path) -> None:
         learning_rate=3e-5,
         weight_decay=0.01,
         head_dropout=0.1,
+        head_hidden_layers=1,
+        head_hidden_dim=None,
         label_smoothing=0.2,
         use_class_frequency_loss=True,
         max_epochs=1,
@@ -2365,6 +2403,7 @@ def test_run_experiment_tests_last_trained_parameters(tmp_path) -> None:
         wandb_project="disabled-project",
         wandb_entity=None,
         wandb_mode="disabled",
+        use_llm_prior_embedding_fusion=False,
     )
 
     with (
@@ -2404,7 +2443,7 @@ def test_run_experiment_tests_last_trained_parameters(tmp_path) -> None:
             "torch.load",
             side_effect=[
                 {"cfg": {"encoder_embed_dim": 1}, "model": {}},
-                {"state_dict": {"classifier.weight": torch.ones((2, 1))}},
+                {"state_dict": {"fusion_head.3.weight": torch.ones((2, 2))}},
                 {"state_dict": {}},
             ],
         ),
@@ -2418,10 +2457,14 @@ def test_run_experiment_tests_last_trained_parameters(tmp_path) -> None:
     assert test_call["ckpt_path"] == str(tmp_path / "best.ckpt")
     assert test_call["test_model"] is test_call["fit_model"]
     assert test_call["test_datamodule"] is test_call["fit_datamodule"]
+    assert isinstance(test_call["fit_model"].fusion_head, torch.nn.Sequential)
+    assert test_call["fit_model"].fusion_head[0].in_features == 1
+    assert test_call["fit_model"].fusion_head[-1].out_features == 2
+    assert not hasattr(test_call["fit_model"], "classifier")
     assert test_call["fit_model"].loss_fn.label_smoothing == 0.2
     assert torch.allclose(test_call["fit_model"].loss_fn.weight, torch.ones(2))
     loaded_initial_state = FakeLightningModule.load_state_dict.call_args_list[0].args[0]
-    assert torch.equal(loaded_initial_state["classifier.weight"], torch.ones((2, 1)))
+    assert torch.equal(loaded_initial_state["fusion_head.3.weight"], torch.ones((2, 2)))
     assert len(FakeEarlyStopping.instances) == 1
     assert FakeEarlyStopping.instances[0].kwargs == {
         "monitor": "val/hierarchical_f1",

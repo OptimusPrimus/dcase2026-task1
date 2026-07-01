@@ -294,6 +294,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", "--weight_decay", type=float, default=0.01)
     parser.add_argument("--head-dropout", type=float, default=0.1)
     parser.add_argument(
+        "--head-hidden-layers",
+        "--head_hidden_layers",
+        type=int,
+        default=1,
+        help="Number of hidden linear layers in the prediction head.",
+    )
+    parser.add_argument(
+        "--head-hidden-dim",
+        "--head_hidden_dim",
+        type=int,
+        default=None,
+        help="Hidden dimension for the prediction head. Defaults to max(input_dim, output_dim).",
+    )
+    parser.add_argument(
         "--label-smoothing", "--label_smoothing",
         type=float,
         default=0.0,
@@ -1072,14 +1086,28 @@ def build_prediction_head(
     input_dim: int,
     output_dim: int,
     dropout: float,
+    hidden_layers: int = 1,
+    hidden_dim: int | None = None,
 ) -> torch.nn.Sequential:
-    hidden_dim = max(input_dim, output_dim)
-    return torch.nn.Sequential(
-        torch.nn.Linear(input_dim, hidden_dim),
-        torch.nn.GELU(),
-        torch.nn.Dropout(dropout),
-        torch.nn.Linear(hidden_dim, output_dim),
-    )
+    if hidden_layers < 0:
+        raise ValueError("hidden_layers must be non-negative.")
+    resolved_hidden_dim = hidden_dim if hidden_dim is not None else max(input_dim, output_dim)
+    if hidden_layers > 0 and resolved_hidden_dim <= 0:
+        raise ValueError("hidden_dim must be positive when hidden_layers is positive.")
+
+    layers: list[torch.nn.Module] = []
+    current_dim = input_dim
+    for _ in range(hidden_layers):
+        layers.extend(
+            [
+                torch.nn.Linear(current_dim, resolved_hidden_dim),
+                torch.nn.GELU(),
+                torch.nn.Dropout(dropout),
+            ]
+        )
+        current_dim = resolved_hidden_dim
+    layers.append(torch.nn.Linear(current_dim, output_dim))
+    return torch.nn.Sequential(*layers)
 
 
 def compute_hierarchical_metrics(
@@ -1306,6 +1334,8 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     "lr_decay_start_step": decay_start_step,
                     "update_steps_per_epoch": update_steps_per_epoch,
                     "total_update_steps": total_update_steps,
+                    "head_hidden_layers": args.head_hidden_layers,
+                    "head_hidden_dim": args.head_hidden_dim,
                     "num_labels": len(label_specs),
                     "freeze_encoder": args.freeze_encoder,
                     "use_llm_prior_embedding_fusion": args.use_llm_prior_embedding_fusion,
@@ -1327,21 +1357,20 @@ def run_experiment(args: argparse.Namespace) -> Path:
             self.use_llm_prior_embedding_fusion = args.use_llm_prior_embedding_fusion
             if self.use_llm_prior_embedding_fusion:
                 fusion_input_dim = self.embedding_model.output_dim * 2
-                classifier_input_dim = self.embedding_model.output_dim
                 self.llm_class_embedding_bank = torch.nn.Embedding(
                     len(label_specs),
                     self.embedding_model.output_dim,
                 )
-                self.fusion_head = build_prediction_head(
-                    fusion_input_dim,
-                    classifier_input_dim,
-                    args.head_dropout,
-                )
             else:
-                classifier_input_dim = self.embedding_model.output_dim
+                fusion_input_dim = self.embedding_model.output_dim
                 self.llm_class_embedding_bank = None
-                self.fusion_head = None
-            self.classifier = torch.nn.Linear(classifier_input_dim, len(label_specs))
+            self.fusion_head = build_prediction_head(
+                fusion_input_dim,
+                len(label_specs),
+                args.head_dropout,
+                hidden_layers=args.head_hidden_layers,
+                hidden_dim=args.head_hidden_dim,
+            )
             self.loss_fn = torch.nn.CrossEntropyLoss(
                 weight=class_frequency_loss_weights,
                 label_smoothing=args.label_smoothing,
@@ -1374,10 +1403,9 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 )
                 llm_features = llm_prior_weights @ self.llm_class_embedding_bank.weight
                 fused_features = torch.cat([audio_features, llm_features], dim=-1)
-                features = self.fusion_head(self.dropout(fused_features))
             else:
-                features = audio_features
-            return self.classifier(self.dropout(features))
+                fused_features = audio_features
+            return self.fusion_head(self.dropout(fused_features))
 
         def _log_wandb_confusion_matrix(
             self,
@@ -1572,6 +1600,8 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "learning_rate": args.learning_rate,
             "weight_decay": args.weight_decay,
             "head_dropout": args.head_dropout,
+            "head_hidden_layers": args.head_hidden_layers,
+            "head_hidden_dim": args.head_hidden_dim,
             "label_smoothing": args.label_smoothing,
             "pseudo_label_dir": str(pseudo_label_dir) if pseudo_label_dir is not None else None,
             "pseudo_label_weight": args.pseudo_label_weight,
