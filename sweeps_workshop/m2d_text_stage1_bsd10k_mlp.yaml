@@ -8,9 +8,7 @@ metric:
 
 parameters:
   learning_rate:
-    distribution: log_uniform_values
-    min: !!float 1e-6
-    max: !!float 5e-6
+    value: !!float 4e-6
   weight_decay:
     value: 0.01
   warmup_epochs:
@@ -21,7 +19,10 @@ parameters:
     value: !!float 0.0
   max_epochs:
     value: 30
-
+  head_hidden_dim:
+    value: 2048
+  head_hidden_layers:
+    values: [1, 2, 3, 4]
 
 command:
   - ${env}
