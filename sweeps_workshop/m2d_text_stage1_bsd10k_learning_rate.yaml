@@ -33,4 +33,6 @@ command:
   - --embedding-model=m2d_te
   - --batch-size=18
   - --save-checkpoints
+  - --head-hidden-dim=2048
+  - --head-hidden-layers=2
   - ${args}
