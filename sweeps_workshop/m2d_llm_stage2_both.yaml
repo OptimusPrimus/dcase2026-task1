@@ -29,7 +29,7 @@ parameters:
   max_epochs:
     value: 30
   pseudo_label_dir:
-    values: ["m2d_0bc332a2__lclap_156d3c4c__te_b0a05044", "lclap_4b80bdf6__m2d_c8c424ed__te_26b40f98", "m2d_418f3c46__lclap_7de5e021__te_a6d20f00"]
+    values: ["ensemble_lclap_156d3c4c__m2d_0bc332a2__te_b0a05044", "ensemble_lclap_4b80bdf6__m2d_c8c424ed__te_26b40f98", "ensemble_lclap_7de5e021__m2d_418f3c46__te_a6d20f00"]
 
 
 command:
