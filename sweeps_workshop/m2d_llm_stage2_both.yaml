@@ -1,7 +1,7 @@
 program: src/dcase2026_task1/experiments/training.py
 project: dcase2026-task1
 method: grid
-run_cap: 30
+run_cap: 3
 
 metric:
   name: val/hierarchical_f1
@@ -10,12 +10,7 @@ metric:
 parameters:
   learning_rate:
     values:
-      - !!float 1e-6
-      - !!float 2e-6
-      - !!float 3e-6
       - !!float 4e-6
-      - !!float 5e-6
-      - !!float 6e-6
   pseudo_label_weight:
     value: 0.99
   weight_decay:
