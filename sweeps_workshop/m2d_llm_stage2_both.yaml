@@ -43,4 +43,5 @@ command:
   - --embedding-model=m2d
   - --use-llm-prior-embedding-fusion
   - --batch-size=18
+  - --save-checkpoints
   - ${args}
