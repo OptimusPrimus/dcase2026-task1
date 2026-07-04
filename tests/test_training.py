@@ -8,6 +8,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 import torch
 
 from dcase2026_task1.data.splits import (
@@ -36,6 +37,7 @@ from dcase2026_task1.experiments.training import (
     compute_classification_metrics,
     compute_hierarchical_metrics,
     epochs_to_update_steps,
+    filter_bsd35k_records_by_pseudo_label_confidence,
     masked_mean_embedding_sequence,
     maybe_limit,
     pool_embedding_sequence,
@@ -136,6 +138,7 @@ def test_parser_seed_defaults_to_none() -> None:
     assert args.use_class_frequency_loss is False
     assert args.pseudo_label_dir is None
     assert args.pseudo_label_weight == 1.0
+    assert args.bsd35k_pseudo_label_confidence_retention is None
     assert args.only_bsd35k_cs is False
     assert args.init_checkpoint_path is None
     assert args.save_checkpoints is False
@@ -747,6 +750,61 @@ def test_load_pseudo_labels_from_ensemble_logits(tmp_path: Path) -> None:
 
     expected = torch.softmax(torch.tensor([0.0, 2.0]), dim=0).numpy()
     assert np.allclose(pseudo_labels["BSD35k-CS:clip_b"], expected)
+
+
+def test_filter_bsd35k_records_by_pseudo_label_confidence_retains_top_fraction_per_predicted_class() -> None:
+    records = [
+        {"sound_id": 1, "source_dataset": "BSD10k"},
+        {"sound_id": 10, "source_dataset": "BSD35k-CS"},
+        {"sound_id": 11, "source_dataset": "BSD35k-CS"},
+        {"sound_id": 12, "source_dataset": "BSD35k-CS"},
+        {"sound_id": 13, "source_dataset": "BSD35k-CS"},
+        {"sound_id": 14, "source_dataset": "BSD35k-CS"},
+    ]
+    pseudo_labels = {
+        "BSD35k-CS:10": np.array([0.9, 0.1], dtype=np.float32),
+        "BSD35k-CS:11": np.array([0.6, 0.4], dtype=np.float32),
+        "BSD35k-CS:12": np.array([0.8, 0.2], dtype=np.float32),
+        "BSD35k-CS:13": np.array([0.2, 0.8], dtype=np.float32),
+        "BSD35k-CS:14": np.array([0.3, 0.7], dtype=np.float32),
+    }
+
+    filtered, stats = filter_bsd35k_records_by_pseudo_label_confidence(
+        records,
+        pseudo_labels,
+        0.5,
+    )
+
+    assert [record["sound_id"] for record in filtered] == [1, 10, 12, 13]
+    assert stats["enabled"] is True
+    assert stats["bsd35k_before"] == 5
+    assert stats["bsd35k_after"] == 3
+    assert stats["bsd35k_missing_pseudo_labels"] == 0
+    assert stats["retained_by_pseudo_label_id"] == {"0": 2, "1": 1}
+
+
+def test_filter_bsd35k_records_by_pseudo_label_confidence_drops_missing_pseudo_labels() -> None:
+    records = [
+        {"sound_id": 10, "source_dataset": "BSD35k-CS"},
+        {"sound_id": 11, "source_dataset": "BSD35k-CS"},
+    ]
+    pseudo_labels = {
+        "BSD35k-CS:10": np.array([0.9, 0.1], dtype=np.float32),
+    }
+
+    filtered, stats = filter_bsd35k_records_by_pseudo_label_confidence(
+        records,
+        pseudo_labels,
+        1.0,
+    )
+
+    assert [record["sound_id"] for record in filtered] == [10]
+    assert stats["bsd35k_missing_pseudo_labels"] == 1
+
+
+def test_filter_bsd35k_records_by_pseudo_label_confidence_rejects_invalid_fraction() -> None:
+    with pytest.raises(ValueError, match="must be in \\[0, 1\\]"):
+        filter_bsd35k_records_by_pseudo_label_confidence([], {}, 1.5)
 
 
 def test_build_embedding_model_beats_accepts_metadata() -> None:

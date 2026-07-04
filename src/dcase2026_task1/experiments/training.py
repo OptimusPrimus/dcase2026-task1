@@ -176,13 +176,7 @@ class WaveformClassificationDataset:
         if sample_rate != self.target_sample_rate:
             waveform = _resample_audio(waveform, sample_rate, self.target_sample_rate)
 
-        pseudo_label = None
-        file_id = resolve_record_file_id(record)
-        source_dataset = str(record["source_dataset"])
-        for key in (f"{source_dataset}:{file_id}", file_id):
-            if key in self.pseudo_labels:
-                pseudo_label = self.pseudo_labels[key]
-                break
+        pseudo_label = resolve_record_pseudo_label(record, self.pseudo_labels)
 
         return {
             "waveform": waveform.astype(np.float32, copy=False),
@@ -332,6 +326,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help="Weight for the pseudo-label loss term.",
+    )
+    parser.add_argument(
+        "--bsd35k-pseudo-label-confidence-retention",
+        "--bsd35k_pseudo_label_confidence_retention",
+        type=float,
+        default=None,
+        help=(
+            "Optional fraction in [0, 1] of BSD35k-CS records to retain per pseudo-label "
+            "predicted class, ranked by pseudo-label confidence. For example, 0.3 keeps "
+            "the most confident 30%% of BSD35k-CS predictions within each predicted class."
+        ),
     )
     parser.add_argument(
         "--use-llm-prior-embedding-fusion",
@@ -871,6 +876,104 @@ def load_pseudo_labels(path: str | Path, label_specs: list[LabelSpec]) -> dict[s
     return pseudo_labels
 
 
+def resolve_record_pseudo_label(
+    record: dict[str, Any],
+    pseudo_labels: dict[str, np.ndarray],
+) -> np.ndarray | None:
+    file_id = resolve_record_file_id(record)
+    source_dataset = str(record["source_dataset"])
+    for key in (f"{source_dataset}:{file_id}", file_id):
+        pseudo_label = pseudo_labels.get(key)
+        if pseudo_label is not None:
+            return pseudo_label
+    return None
+
+
+def filter_bsd35k_records_by_pseudo_label_confidence(
+    records: list[dict[str, Any]],
+    pseudo_labels: dict[str, np.ndarray],
+    retention_fraction: float | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if retention_fraction is None:
+        bsd35k_count = sum(record["source_dataset"] == "BSD35k-CS" for record in records)
+        return records, {
+            "enabled": False,
+            "retention_fraction": None,
+            "bsd35k_before": bsd35k_count,
+            "bsd35k_after": bsd35k_count,
+            "bsd35k_missing_pseudo_labels": 0,
+            "retained_by_pseudo_label_id": {},
+        }
+
+    if not 0.0 <= retention_fraction <= 1.0:
+        raise ValueError("--bsd35k-pseudo-label-confidence-retention must be in [0, 1].")
+
+    bsd10k_records = [
+        record for record in records if str(record["source_dataset"]) != "BSD35k-CS"
+    ]
+    bsd35k_records = [
+        record for record in records if str(record["source_dataset"]) == "BSD35k-CS"
+    ]
+    if not bsd35k_records:
+        return records, {
+            "enabled": True,
+            "retention_fraction": retention_fraction,
+            "bsd35k_before": 0,
+            "bsd35k_after": 0,
+            "bsd35k_missing_pseudo_labels": 0,
+            "retained_by_pseudo_label_id": {},
+        }
+    if not pseudo_labels:
+        raise ValueError(
+            "--bsd35k-pseudo-label-confidence-retention requires --pseudo-label-dir "
+            "when BSD35k-CS records are part of the training split."
+        )
+
+    ranked_by_label: dict[int, list[tuple[float, int, dict[str, Any]]]] = {}
+    missing_pseudo_labels = 0
+    for original_index, record in enumerate(bsd35k_records):
+        pseudo_label = resolve_record_pseudo_label(record, pseudo_labels)
+        if pseudo_label is None:
+            missing_pseudo_labels += 1
+            continue
+        probabilities = np.asarray(pseudo_label, dtype=np.float32)
+        if probabilities.size == 0:
+            missing_pseudo_labels += 1
+            continue
+        predicted_label_id = int(probabilities.argmax())
+        confidence = float(probabilities[predicted_label_id])
+        ranked_by_label.setdefault(predicted_label_id, []).append(
+            (confidence, original_index, record)
+        )
+
+    retained_records_by_original_index: dict[int, dict[str, Any]] = {}
+    retained_by_label: dict[str, int] = {}
+    for label_id, ranked_records in ranked_by_label.items():
+        ranked_records = sorted(
+            ranked_records,
+            key=lambda item: (item[0], -item[1]),
+            reverse=True,
+        )
+        retained_count = math.ceil(len(ranked_records) * retention_fraction)
+        retained_by_label[str(label_id)] = retained_count
+        for _confidence, original_index, record in ranked_records[:retained_count]:
+            retained_records_by_original_index[original_index] = record
+
+    filtered_bsd35k_records = [
+        retained_records_by_original_index[index]
+        for index in sorted(retained_records_by_original_index)
+    ]
+    filtered_records = bsd10k_records + filtered_bsd35k_records
+    return filtered_records, {
+        "enabled": True,
+        "retention_fraction": retention_fraction,
+        "bsd35k_before": len(bsd35k_records),
+        "bsd35k_after": len(filtered_bsd35k_records),
+        "bsd35k_missing_pseudo_labels": missing_pseudo_labels,
+        "retained_by_pseudo_label_id": retained_by_label,
+    }
+
+
 def soft_cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     return -(targets * torch.nn.functional.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
 
@@ -1247,6 +1350,13 @@ def run_experiment(args: argparse.Namespace) -> Path:
         if pseudo_label_dir is not None
         else {}
     )
+    train_records, bsd35k_pseudo_label_confidence_filter = (
+        filter_bsd35k_records_by_pseudo_label_confidence(
+            train_records,
+            pseudo_labels,
+            args.bsd35k_pseudo_label_confidence_retention,
+        )
+    )
     clean_train_size = sum(record["source_dataset"] == "BSD10k" for record in train_records)
     noisy_train_size = sum(record["source_dataset"] == "BSD35k-CS" for record in train_records)
     experiment_dir = create_experiment_dir(
@@ -1328,6 +1438,9 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     "use_class_frequency_loss": args.use_class_frequency_loss,
                     "pseudo_label_dir": str(pseudo_label_dir) if pseudo_label_dir is not None else None,
                     "pseudo_label_weight": args.pseudo_label_weight,
+                    "bsd35k_pseudo_label_confidence_retention": (
+                        args.bsd35k_pseudo_label_confidence_retention
+                    ),
                     "warmup_epochs": args.warmup_epochs,
                     "warmup_steps": warmup_steps,
                     "lr_decay_start_epoch": args.lr_decay_start_epoch,
@@ -1584,6 +1697,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "validation_dataset": "BSD10k",
             "clean_train_size": clean_train_size,
             "noisy_train_size": noisy_train_size,
+            "bsd35k_pseudo_label_confidence_filter": bsd35k_pseudo_label_confidence_filter,
             "train_size": len(train_indices),
             "val_size": len(val_indices),
             "test_size": len(test_indices),
@@ -1606,6 +1720,9 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "pseudo_label_dir": str(pseudo_label_dir) if pseudo_label_dir is not None else None,
             "pseudo_label_weight": args.pseudo_label_weight,
             "num_pseudo_labels": len(pseudo_labels),
+            "bsd35k_pseudo_label_confidence_retention": (
+                args.bsd35k_pseudo_label_confidence_retention
+            ),
             "max_epochs": args.max_epochs,
             "early_stopping_patience": args.early_stopping_patience,
             "warmup_epochs": args.warmup_epochs,
