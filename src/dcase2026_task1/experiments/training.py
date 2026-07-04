@@ -335,7 +335,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Optional fraction in [0, 1] of BSD35k-CS records to retain per pseudo-label "
             "predicted class, ranked by pseudo-label confidence. For example, 0.3 keeps "
-            "the most confident 30%% of BSD35k-CS predictions within each predicted class."
+            "the most confident 30%% of BSD35k-CS predictions within each predicted class, "
+            "then repeats retained records so the BSD35k-CS training split size is unchanged."
         ),
     )
     parser.add_argument(
@@ -901,6 +902,7 @@ def filter_bsd35k_records_by_pseudo_label_confidence(
             "retention_fraction": None,
             "bsd35k_before": bsd35k_count,
             "bsd35k_after": bsd35k_count,
+            "bsd35k_unique_retained": bsd35k_count,
             "bsd35k_missing_pseudo_labels": 0,
             "retained_by_pseudo_label_id": {},
         }
@@ -920,6 +922,7 @@ def filter_bsd35k_records_by_pseudo_label_confidence(
             "retention_fraction": retention_fraction,
             "bsd35k_before": 0,
             "bsd35k_after": 0,
+            "bsd35k_unique_retained": 0,
             "bsd35k_missing_pseudo_labels": 0,
             "retained_by_pseudo_label_id": {},
         }
@@ -959,16 +962,21 @@ def filter_bsd35k_records_by_pseudo_label_confidence(
         for _confidence, original_index, record in ranked_records[:retained_count]:
             retained_records_by_original_index[original_index] = record
 
-    filtered_bsd35k_records = [
+    retained_bsd35k_records = [
         retained_records_by_original_index[index]
         for index in sorted(retained_records_by_original_index)
     ]
+    filtered_bsd35k_records = [
+        retained_bsd35k_records[index % len(retained_bsd35k_records)]
+        for index in range(len(bsd35k_records))
+    ] if retained_bsd35k_records else []
     filtered_records = bsd10k_records + filtered_bsd35k_records
     return filtered_records, {
         "enabled": True,
         "retention_fraction": retention_fraction,
         "bsd35k_before": len(bsd35k_records),
         "bsd35k_after": len(filtered_bsd35k_records),
+        "bsd35k_unique_retained": len(retained_bsd35k_records),
         "bsd35k_missing_pseudo_labels": missing_pseudo_labels,
         "retained_by_pseudo_label_id": retained_by_label,
     }

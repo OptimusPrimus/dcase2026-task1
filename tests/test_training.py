@@ -775,10 +775,11 @@ def test_filter_bsd35k_records_by_pseudo_label_confidence_retains_top_fraction_p
         0.5,
     )
 
-    assert [record["sound_id"] for record in filtered] == [1, 10, 12, 13]
+    assert [record["sound_id"] for record in filtered] == [1, 10, 12, 13, 10, 12]
     assert stats["enabled"] is True
     assert stats["bsd35k_before"] == 5
-    assert stats["bsd35k_after"] == 3
+    assert stats["bsd35k_after"] == 5
+    assert stats["bsd35k_unique_retained"] == 3
     assert stats["bsd35k_missing_pseudo_labels"] == 0
     assert stats["retained_by_pseudo_label_id"] == {"0": 2, "1": 1}
 
@@ -798,7 +799,9 @@ def test_filter_bsd35k_records_by_pseudo_label_confidence_drops_missing_pseudo_l
         1.0,
     )
 
-    assert [record["sound_id"] for record in filtered] == [10]
+    assert [record["sound_id"] for record in filtered] == [10, 10]
+    assert stats["bsd35k_after"] == 2
+    assert stats["bsd35k_unique_retained"] == 1
     assert stats["bsd35k_missing_pseudo_labels"] == 1
 
 
