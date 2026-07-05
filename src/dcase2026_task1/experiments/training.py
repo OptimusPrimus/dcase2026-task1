@@ -247,7 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory used for embedding-model checkpoints.",
     )
     parser.add_argument(
-        "--init-checkpoint-path",
+        "--init-checkpoint-path", "--init_checkpoint_path",
         default=None,
         help=(
             "Optional training run name under --output-root, run directory, or checkpoint "
