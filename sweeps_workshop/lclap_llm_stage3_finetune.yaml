@@ -1,7 +1,7 @@
 program: src/dcase2026_task1/experiments/training.py
 project: dcase2026-task1
 method: grid
-run_cap: 12
+run_cap: 15
 
 metric:
   name: val/hierarchical_f1
@@ -10,9 +10,6 @@ metric:
 parameters:
   learning_rate:
     values:
-      - !!float 1e-6
-      - !!float 2e-6
-      - !!float 3e-6
       - !!float 4e-6
   weight_decay:
     value: 0.01
@@ -24,11 +21,13 @@ parameters:
     value: !!float 0.0
   max_epochs:
     values:
+      - 1
+      - 2
+      - 3
+      - 4
       - 5
-      - 10
-      - 15
   init_checkpoint_path:
-    values: [20260705_152418_BSD35k-CS_train_only_lclap_7c0503e1]
+    values: [20260705_152418_BSD35k-CS_train_only_lclap_7c0503e1, 20260705_165624_BSD35k-CS_train_only_lclap_b2c8796e, 20260705_151807_BSD35k-CS_train_only_lclap_40c5ae89]
 
 command:
   - ${env}
