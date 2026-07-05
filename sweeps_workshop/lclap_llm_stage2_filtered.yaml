@@ -1,7 +1,7 @@
 program: src/dcase2026_task1/experiments/training.py
 project: dcase2026-task1
 method: grid
-run_cap: 12
+run_cap: 21
 
 metric:
   name: val/hierarchical_f1
@@ -13,10 +13,13 @@ parameters:
       - !!float 4e-6
   bsd35k_pseudo_label_confidence_retention:
     values:
-      - !!float 0.1
-      - !!float 0.2
-      - !!float 0.3
       - !!float 0.4
+      - !!float 0.5
+      - !!float 0.6
+      - !!float 0.7
+      - !!float 0.8
+      - !!float 0.9
+      - !!float 1.0
   pseudo_label_weight:
     value: 0.99
   weight_decay:
@@ -45,5 +48,5 @@ command:
   - --use-llm-prior-embedding-fusion
   - --batch-size=18
   - --save-checkpoints
-
+  - --early-stopping-patience=30
   - ${args}
