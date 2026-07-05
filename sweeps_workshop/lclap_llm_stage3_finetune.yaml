@@ -35,7 +35,6 @@ command:
   - ${interpreter}
   - -m
   - dcase2026_task1.experiments.training
-  - --only-bsd35k-cs
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
   - --embedding-model=lclap
