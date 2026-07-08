@@ -23,7 +23,7 @@ from dcase2026_task1.models.M2D import (
 )
 from dcase2026_task1.models.beats import build_beats_embedding_model
 from dcase2026_task1.models.clap import (
-    KEYWORD_METADATA_KEY,
+    KEYWORD_METADATA_KEY, TITLE_METADATA_KEY,
     build_clap_embedding_model,
 )
 from dcase2026_task1.models.lclap import (
@@ -670,12 +670,20 @@ def build_embedding_model(
             sample_rate=sample_rate,
         )
     if args.embedding_model == "lclap_kw":
-        return build_lclap_embedding_model(
+        return build_lclap_text_encoder(
             checkpoint_dir=args.checkpoint_dir,
             trust_checkpoint=args.trust_checkpoint,
             sample_rate=sample_rate,
             metadata_text_key=KEYWORD_METADATA_KEY,
             arch="lclap_kw",
+        )
+    if args.embedding_model == "lclap_title":
+        return build_lclap_text_encoder(
+            checkpoint_dir=args.checkpoint_dir,
+            trust_checkpoint=args.trust_checkpoint,
+            sample_rate=sample_rate,
+            metadata_text_key=TITLE_METADATA_KEY,
+            arch="lclap_title",
         )
     raise ValueError(f"Unsupported embedding model: {args.embedding_model!r}")
 

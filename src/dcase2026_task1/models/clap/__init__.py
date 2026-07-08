@@ -14,6 +14,7 @@ DEFAULT_S_PATCHOUT_F = 2
 DEFAULT_INITIAL_TAU = 0.07
 SUMMARY_METADATA_KEY = "metadata_summary"
 KEYWORD_METADATA_KEY = "tags"
+TITLE_METADATA_KEY = "title"
 
 
 def _metadata_value_to_text(value: Any) -> str:
