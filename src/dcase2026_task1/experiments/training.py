@@ -340,6 +340,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--bsd35k-random-retention",
+        "--bsd35k_random_retention",
+        type=float,
+        default=None,
+        help=(
+            "Optional fraction in (0, 1] of BSD35k-CS records to retain by random sampling. "
+            "Retained records are repeated so the BSD35k-CS training split size is unchanged."
+        ),
+    )
+    parser.add_argument(
         "--use-llm-prior-embedding-fusion",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -990,6 +1000,60 @@ def filter_bsd35k_records_by_pseudo_label_confidence(
     }
 
 
+def sample_bsd35k_records_randomly(
+    records: list[dict[str, Any]],
+    retention_fraction: float | None,
+    seed: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    bsd35k_count = sum(record["source_dataset"] == "BSD35k-CS" for record in records)
+    if retention_fraction is None:
+        return records, {
+            "enabled": False,
+            "retention_fraction": None,
+            "seed": seed,
+            "bsd35k_before": bsd35k_count,
+            "bsd35k_after": bsd35k_count,
+            "bsd35k_unique_retained": bsd35k_count,
+        }
+
+    if not 0.0 < retention_fraction <= 1.0:
+        raise ValueError("--bsd35k-random-retention must be in (0, 1].")
+
+    bsd10k_records = [
+        record for record in records if str(record["source_dataset"]) != "BSD35k-CS"
+    ]
+    bsd35k_records = [
+        record for record in records if str(record["source_dataset"]) == "BSD35k-CS"
+    ]
+    if not bsd35k_records:
+        return records, {
+            "enabled": True,
+            "retention_fraction": retention_fraction,
+            "seed": seed,
+            "bsd35k_before": 0,
+            "bsd35k_after": 0,
+            "bsd35k_unique_retained": 0,
+        }
+
+    retained_count = math.ceil(len(bsd35k_records) * retention_fraction)
+    retained_indices = sorted(
+        random.Random(seed).sample(range(len(bsd35k_records)), retained_count)
+    )
+    retained_bsd35k_records = [bsd35k_records[index] for index in retained_indices]
+    sampled_bsd35k_records = [
+        retained_bsd35k_records[index % len(retained_bsd35k_records)]
+        for index in range(len(bsd35k_records))
+    ]
+    return bsd10k_records + sampled_bsd35k_records, {
+        "enabled": True,
+        "retention_fraction": retention_fraction,
+        "seed": seed,
+        "bsd35k_before": len(bsd35k_records),
+        "bsd35k_after": len(sampled_bsd35k_records),
+        "bsd35k_unique_retained": len(retained_bsd35k_records),
+    }
+
+
 def soft_cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     return -(targets * torch.nn.functional.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
 
@@ -1340,6 +1404,15 @@ def run_experiment(args: argparse.Namespace) -> Path:
         )
     if args.pseudo_label_weight < 0:
         raise ValueError("--pseudo-label-weight must be non-negative.")
+    bsd35k_random_retention = getattr(args, "bsd35k_random_retention", None)
+    if (
+        args.bsd35k_pseudo_label_confidence_retention is not None
+        and bsd35k_random_retention is not None
+    ):
+        raise ValueError(
+            "--bsd35k-pseudo-label-confidence-retention and "
+            "--bsd35k-random-retention cannot both be enabled."
+        )
 
     seed = resolve_seed(args.seed)
     args.seed = seed
@@ -1372,6 +1445,11 @@ def run_experiment(args: argparse.Namespace) -> Path:
             pseudo_labels,
             args.bsd35k_pseudo_label_confidence_retention,
         )
+    )
+    train_records, bsd35k_random_filter = sample_bsd35k_records_randomly(
+        train_records,
+        bsd35k_random_retention,
+        seed,
     )
     clean_train_size = sum(record["source_dataset"] == "BSD10k" for record in train_records)
     noisy_train_size = sum(record["source_dataset"] == "BSD35k-CS" for record in train_records)
@@ -1457,6 +1535,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
                     "bsd35k_pseudo_label_confidence_retention": (
                         args.bsd35k_pseudo_label_confidence_retention
                     ),
+                    "bsd35k_random_retention": bsd35k_random_retention,
                     "warmup_epochs": args.warmup_epochs,
                     "warmup_steps": warmup_steps,
                     "lr_decay_start_epoch": args.lr_decay_start_epoch,
@@ -1714,6 +1793,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "clean_train_size": clean_train_size,
             "noisy_train_size": noisy_train_size,
             "bsd35k_pseudo_label_confidence_filter": bsd35k_pseudo_label_confidence_filter,
+            "bsd35k_random_filter": bsd35k_random_filter,
             "train_size": len(train_indices),
             "val_size": len(val_indices),
             "test_size": len(test_indices),
@@ -1739,6 +1819,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
             "bsd35k_pseudo_label_confidence_retention": (
                 args.bsd35k_pseudo_label_confidence_retention
             ),
+            "bsd35k_random_retention": bsd35k_random_retention,
             "max_epochs": args.max_epochs,
             "early_stopping_patience": args.early_stopping_patience,
             "warmup_epochs": args.warmup_epochs,

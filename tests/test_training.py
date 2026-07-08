@@ -52,6 +52,7 @@ from dcase2026_task1.experiments.training import (
     resolve_dataset_roots,
     resolve_seed,
     run_experiment,
+    sample_bsd35k_records_randomly,
     write_logits_npz,
 )
 from dcase2026_task1.models.audio_wrappers import (
@@ -139,6 +140,7 @@ def test_parser_seed_defaults_to_none() -> None:
     assert args.pseudo_label_dir is None
     assert args.pseudo_label_weight == 1.0
     assert args.bsd35k_pseudo_label_confidence_retention is None
+    assert args.bsd35k_random_retention is None
     assert args.only_bsd35k_cs is False
     assert args.init_checkpoint_path is None
     assert args.save_checkpoints is False
@@ -808,6 +810,48 @@ def test_filter_bsd35k_records_by_pseudo_label_confidence_drops_missing_pseudo_l
 def test_filter_bsd35k_records_by_pseudo_label_confidence_rejects_invalid_fraction() -> None:
     with pytest.raises(ValueError, match="must be in \\[0, 1\\]"):
         filter_bsd35k_records_by_pseudo_label_confidence([], {}, 1.5)
+
+
+def test_sample_bsd35k_records_randomly_retains_random_subset_without_changing_size() -> None:
+    records = [
+        {"sound_id": 1, "source_dataset": "BSD10k"},
+        {"sound_id": 10, "source_dataset": "BSD35k-CS"},
+        {"sound_id": 11, "source_dataset": "BSD35k-CS"},
+        {"sound_id": 12, "source_dataset": "BSD35k-CS"},
+        {"sound_id": 13, "source_dataset": "BSD35k-CS"},
+        {"sound_id": 14, "source_dataset": "BSD35k-CS"},
+    ]
+
+    sampled, stats = sample_bsd35k_records_randomly(records, 0.5, seed=123)
+
+    assert [record["sound_id"] for record in sampled] == [1, 10, 12, 14, 10, 12]
+    assert len(sampled) == len(records)
+    assert stats == {
+        "enabled": True,
+        "retention_fraction": 0.5,
+        "seed": 123,
+        "bsd35k_before": 5,
+        "bsd35k_after": 5,
+        "bsd35k_unique_retained": 3,
+    }
+
+
+def test_sample_bsd35k_records_randomly_rejects_invalid_fraction() -> None:
+    with pytest.raises(ValueError, match="must be in \\(0, 1\\]"):
+        sample_bsd35k_records_randomly([], 0.0, seed=123)
+
+
+def test_run_experiment_rejects_both_bsd35k_subset_policies() -> None:
+    args = Namespace(
+        include_bsd35k_cs=False,
+        only_bsd35k_cs=False,
+        pseudo_label_weight=0.0,
+        bsd35k_pseudo_label_confidence_retention=0.5,
+        bsd35k_random_retention=0.5,
+    )
+
+    with pytest.raises(ValueError, match="cannot both be enabled"):
+        run_experiment(args)
 
 
 def test_build_embedding_model_beats_accepts_metadata() -> None:

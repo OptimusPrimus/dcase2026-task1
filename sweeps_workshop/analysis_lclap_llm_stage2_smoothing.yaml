@@ -27,7 +27,7 @@ parameters:
   min_learning_rate:
     value: !!float 0.0
   max_epochs:
-    value: 10
+    value: 30
   seed:
     values: [545224, 527471, 211498]
 
