@@ -22,7 +22,7 @@ parameters:
   min_learning_rate:
     value: !!float 0.0
   max_epochs:
-    value: 10
+    value: 30
   pseudo_label_dir:
     values: [
       "ensemble_lclap_156d3c4c__m2d_0bc332a2__te_b0a05044",
