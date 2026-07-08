@@ -1,7 +1,7 @@
 program: src/dcase2026_task1/experiments/training.py
 project: dcase2026-task1
 method: grid
-run_cap: 15
+run_cap: 3
 
 metric:
   name: val/hierarchical_f1
@@ -9,8 +9,7 @@ metric:
 
 parameters:
   learning_rate:
-    values:
-      - !!float 4e-6
+    value: !!float 4e-6
   weight_decay:
     value: 0.01
   warmup_epochs:
@@ -20,18 +19,10 @@ parameters:
   min_learning_rate:
     value: !!float 0.0
   max_epochs:
-    values:
-      - 1
-      - 2
-      - 3
-      - 4
-      - 5
-  init_checkpoint_path:
-    values: [
-      20260705_152418_BSD35k-CS_train_only_lclap_7c0503e1,
-      20260705_165624_BSD35k-CS_train_only_lclap_b2c8796e,
-      20260705_151807_BSD35k-CS_train_only_lclap_40c5ae89
-    ]
+    value: 30
+  seed:
+    values: [865021, 327521, 22282]
+
 
 command:
   - ${env}
@@ -41,8 +32,7 @@ command:
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
   - --embedding-model=lclap
-  - --use-llm-prior-embedding-fusion
   - --batch-size=18
+  - --use-llm-prior-embedding-fusion
   - --save-checkpoints
-  - --early-stopping-patience=30
   - ${args}

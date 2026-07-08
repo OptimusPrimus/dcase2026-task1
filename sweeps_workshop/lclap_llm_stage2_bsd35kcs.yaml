@@ -1,6 +1,6 @@
 program: src/dcase2026_task1/experiments/training.py
 project: dcase2026-task1
-method: random
+method: grid
 run_cap: 3
 
 metric:
@@ -9,7 +9,10 @@ metric:
 
 parameters:
   learning_rate:
-    value: !!float 4e-6
+    values:
+      - !!float 4e-6
+  pseudo_label_weight:
+    value: 1.0
   weight_decay:
     value: 0.01
   warmup_epochs:
@@ -19,9 +22,13 @@ parameters:
   min_learning_rate:
     value: !!float 0.0
   max_epochs:
-    value: 30
-  seed:
-    values: [865021, 327521, 22282]
+    value: 10
+  pseudo_label_dir:
+    values: [
+      "ensemble_lclap_156d3c4c__m2d_0bc332a2__te_b0a05044",
+      "ensemble_lclap_4b80bdf6__m2d_c8c424ed__te_26b40f98",
+      "ensemble_lclap_7de5e021__m2d_418f3c46__te_a6d20f00"
+    ]
 
 
 command:
@@ -29,10 +36,11 @@ command:
   - ${interpreter}
   - -m
   - dcase2026_task1.experiments.training
+  - --only-bsd35k-cs
   - --wandb-project=dcase2026-task1
   - --wandb-mode=online
   - --embedding-model=lclap
-  - --batch-size=18
   - --use-llm-prior-embedding-fusion
+  - --batch-size=18
   - --save-checkpoints
   - ${args}

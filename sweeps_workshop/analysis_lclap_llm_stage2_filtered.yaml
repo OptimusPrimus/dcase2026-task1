@@ -1,7 +1,7 @@
 program: src/dcase2026_task1/experiments/training.py
 project: dcase2026-task1
 method: grid
-run_cap: 21
+run_cap: 15
 
 metric:
   name: val/hierarchical_f1
@@ -13,15 +13,13 @@ parameters:
       - !!float 4e-6
   bsd35k_pseudo_label_confidence_retention:
     values:
+      - !!float 0.2
       - !!float 0.4
-      - !!float 0.5
       - !!float 0.6
-      - !!float 0.7
       - !!float 0.8
-      - !!float 0.9
       - !!float 1.0
   pseudo_label_weight:
-    value: 0.99
+    value: 1.0
   weight_decay:
     value: 0.01
   warmup_epochs:
@@ -33,7 +31,11 @@ parameters:
   max_epochs:
     value: 30
   pseudo_label_dir:
-    values: ["ensemble_lclap_156d3c4c__m2d_0bc332a2__te_b0a05044", "ensemble_lclap_4b80bdf6__m2d_c8c424ed__te_26b40f98", "ensemble_lclap_7de5e021__m2d_418f3c46__te_a6d20f00"]
+    values: [
+      "ensemble_lclap_156d3c4c__m2d_0bc332a2__te_b0a05044",
+      "ensemble_lclap_4b80bdf6__m2d_c8c424ed__te_26b40f98",
+      "ensemble_lclap_7de5e021__m2d_418f3c46__te_a6d20f00"
+    ]
 
 
 command:
