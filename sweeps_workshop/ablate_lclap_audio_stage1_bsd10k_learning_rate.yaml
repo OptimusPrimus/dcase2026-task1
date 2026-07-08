@@ -1,6 +1,6 @@
 program: src/dcase2026_task1/experiments/training.py
 project: dcase2026-task1
-method: random
+method: grid
 run_cap: 3
 metric:
   name: val/hierarchical_f1
@@ -8,9 +8,7 @@ metric:
 
 parameters:
   learning_rate:
-    distribution: log_uniform_values
-    min: !!float 4.00e-6
-    max: !!float 4.01e-6
+    value: !!float 4.0e-6
   weight_decay:
     value: 0.01
   warmup_epochs:
@@ -21,7 +19,8 @@ parameters:
     value: !!float 0.0
   max_epochs:
     value: 30
-
+  seed:
+    values: [865021, 327521, 22282]
 
 command:
   - ${env}
