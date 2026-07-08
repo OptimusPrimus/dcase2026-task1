@@ -1,6 +1,6 @@
 program: src/dcase2026_task1/experiments/training.py
 project: dcase2026-task1
-method: random
+method: grid
 run_cap: 3
 metric:
   name: val/hierarchical_f1
