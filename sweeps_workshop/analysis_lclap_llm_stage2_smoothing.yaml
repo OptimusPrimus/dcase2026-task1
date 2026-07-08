@@ -1,7 +1,7 @@
 program: src/dcase2026_task1/experiments/training.py
 project: dcase2026-task1
 method: grid
-run_cap: 18
+run_cap: 15
 
 metric:
   name: val/hierarchical_f1
