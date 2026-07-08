@@ -28,9 +28,9 @@ parameters:
       - 5
   init_checkpoint_path:
     values: [
-      20260705_152418_BSD35k-CS_train_only_lclap_7c0503e1,
-      20260705_165624_BSD35k-CS_train_only_lclap_b2c8796e,
-      20260705_151807_BSD35k-CS_train_only_lclap_40c5ae89
+              20260708_101743_BSD35k-CS_train_only_lclap_6c2dc971,
+              20260708_101743_BSD35k-CS_train_only_lclap_0ecaa9c5,
+              20260708_101742_BSD35k-CS_train_only_lclap_6291f71a
     ]
 
 command:
