@@ -298,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--head-hidden-dim",
         "--head_hidden_dim",
         type=int,
-        default=None,
+        default=1024,
         help="Hidden dimension for the prediction head. Defaults to max(input_dim, output_dim).",
     )
     parser.add_argument(

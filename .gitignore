@@ -1,2 +1,18 @@
 /src/dcase2026_task1.egg-info/
 /src/dcase2026_task1/experiments/outputs/
+/tests/
+
+# Generated data and model outputs
+/processed_metadata/
+/analysis/20*/
+/analysis/analysis_output/
+/submission/ensemble_*/
+/submission/package/
+
+# Large generated file types
+*.jsonl
+*.npz
+
+# Python caches
+__pycache__/
+*.py[cod]

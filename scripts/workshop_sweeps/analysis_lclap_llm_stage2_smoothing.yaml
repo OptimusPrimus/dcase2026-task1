@@ -1,0 +1,47 @@
+program: src/dcase2026_task1/experiments/training.py
+project: dcase2026-task1
+method: grid
+run_cap: 15
+
+metric:
+  name: val/hierarchical_f1
+  goal: maximize
+
+parameters:
+  learning_rate:
+    values:
+      - !!float 4e-6
+  label_smoothing:
+    values:
+      - !!float 0.05
+      - !!float 0.1
+      - !!float 0.15
+      - !!float 0.2
+      - !!float 0.25
+  weight_decay:
+    value: 0.01
+  warmup_epochs:
+    value: 1
+  lr_decay_start_epoch:
+    value: 1
+  min_learning_rate:
+    value: !!float 0.0
+  max_epochs:
+    value: 30
+  seed:
+    values: [545224, 527471, 211498]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - -m
+  - dcase2026_task1.experiments.training
+  - --only-bsd35k-cs
+  - --wandb-project=dcase2026-task1
+  - --wandb-mode=online
+  - --embedding-model=lclap
+  - --use-llm-prior-embedding-fusion
+  - --batch-size=18
+  - --save-checkpoints
+  - --early-stopping-patience=30
+  - ${args}

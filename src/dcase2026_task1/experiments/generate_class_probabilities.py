@@ -21,7 +21,7 @@ from dcase2026_task1.data.datasets import (
 
 DEFAULT_MODEL_ID = "gpt-5.4-mini"
 DEFAULT_COMPLETION_WINDOW = "24h"
-DEFAULT_OUTPUT_ROOT = "outputs/experiments"
+DEFAULT_OUTPUT_ROOT = "processed_metadata"
 BATCH_DIR_PREFIX = "batch_"
 REQUESTS_FILENAME = "batch_requests.jsonl"
 INPUT_ROWS_FILENAME = "input_rows.jsonl"

@@ -13,28 +13,22 @@ DEFAULT_BSD35K_ROOT = Path.home() / "data" / "BSD35k-CS"
 DEFAULT_BSD10K_ROOT = Path.home() / "data" / "BSD10k"
 DEFAULT_BSD2K_ROOT = Path.home() / "data" / "BSD2k"
 DEFAULT_BSD10K_METADATA_CLASS_PROBABILITIES_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "experiments"
-    / "outputs"
-    / "experiments"
+    Path(__file__).resolve().parent.parent.parent.parent.parent
+    / "processed_metadata"
     / "20260611_211801_BSD10k_gpt-5.4-mini_f5706ed2"
     / "predictions.jsonl"
 )
 
 DEFAULT_BSD2K_METADATA_CLASS_PROBABILITIES_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "experiments"
-    / "outputs"
-    / "experiments"
+    Path(__file__).resolve().parent.parent.parent.parent.parent
+    / "processed_metadata"
     / "20260611_211913_BSD2k_gpt-5.4-mini_b628ef79"
     / "predictions.jsonl"
 )
 
 DEFAULT_BSD35K_METADATA_CLASS_PROBABILITIES_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "experiments"
-    / "outputs"
-    / "experiments"
+    Path(__file__).resolve().parent.parent.parent.parent.parent
+    / "processed_metadata"
     / "20260611_220253_BSD35k-CS_gpt-5.4-mini_f51027cc"
     / "predictions.jsonl"
 )
@@ -47,27 +41,21 @@ DEFAULT_METADATA_CLASS_PROBABILITIES_PATHS = {
 
 DEFAULT_BSD10K_METADATA_SUMMARY_PATH = (
     Path(__file__).resolve().parent.parent
-    / "experiments"
-    / "outputs"
-    / "experiments"
+    / "processed_metadata"
     / "20260610_234726_BSD10k_gpt-5.4-mini_2ffa7194"
     / "predictions.jsonl"
 )
 
 DEFAULT_BSD2K_METADATA_SUMMARY_PATH = (
     Path(__file__).resolve().parent.parent
-    / "experiments"
-    / "outputs"
-    / "experiments"
+    / "processed_metadata"
     / "20260612_015409_BSD2k_gpt-5.4-mini_3b304142"
     / "predictions.jsonl"
 )
 
 DEFAULT_BSD35K_METADATA_SUMMARY_PATH = (
     Path(__file__).resolve().parent.parent
-    / "experiments"
-    / "outputs"
-    / "experiments"
+    / "processed_metadata"
     / "20260612_021115_BSD35k-CS_gpt-5.4-mini_2f6af3c8"
     / "predictions.jsonl"
 )
