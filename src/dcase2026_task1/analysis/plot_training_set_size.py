@@ -24,7 +24,7 @@ CONFIDENCE_SUBSET_FH1 = {
 
 # Placeholder until the random-subset runs are available.
 RANDOM_SUBSET_FH1 = {
-    0.1: [0.78981, 0.79652, 0.79549],
+    0.1: [0.79837, 0.79564, 0.78872],
     0.2: [0.80281, 0.80652, 0.79549],
     0.4: [0.80605, 0.80894, 0.81829],
     0.6: [0.81426, 0.81588, 0.80764],
