@@ -70,12 +70,14 @@ If you use a different location, update the metadata paths in
 
 ## Run an Experiment
 
-Run a single training experiment with the default BEATs backbone:
+Run a single training experiment with the LAION-CLAP backbone:
 
 ```bash
 python -m dcase2026_task1.experiments.training \
   --wandb-project=dcase2026-task1 \
   --wandb-mode=online \
+  --embedding-model=lclap \
+  --batch-size=18 \
   --learning-rate=4e-6 \
   --weight-decay=0.01 \
   --warmup-epochs=1 \
@@ -84,7 +86,7 @@ python -m dcase2026_task1.experiments.training \
   --max-epochs=30
 ```
 
-Run the LCLAP model with LLM-prior embedding fusion:
+Run the LAION-CLAP model with LLM-prior embedding fusion:
 
 ```bash
 python -m dcase2026_task1.experiments.training \
