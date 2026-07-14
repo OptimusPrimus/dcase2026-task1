@@ -3,6 +3,9 @@
 /tests/
 
 # Generated data and model outputs
+/data/
+/checkpoints/
+/output/
 /processed_metadata/
 /analysis/20*/
 /analysis/analysis_output/

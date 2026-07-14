@@ -17,6 +17,12 @@ from dcase2026_task1.data.splits import (
     DEFAULT_BSD_SPLIT_SEED,
     get_experiment_records,
 )
+from dcase2026_task1.data.datasets import (
+    DEFAULT_BSD10K_ROOT,
+    DEFAULT_BSD35K_ROOT,
+    DEFAULT_BSD2K_ROOT,
+    REPOSITORY_ROOT,
+)
 from dcase2026_task1.models.M2D import (
     build_m2d_embedding_model,
     build_m2d_text_encoder_embedding_model,
@@ -40,32 +46,8 @@ warnings.filterwarnings(
 )
 
 DEFAULT_WANDB_PROJECT = "dcase2026-task1"
-DEFAULT_BSD10K_ROOT = (
-    Path("/opt/scratch/paul/data/BSD10k")
-    if Path("/opt/scratch").exists()
-    else Path.home() / "data" / "BSD10k"
-)
-DEFAULT_BSD35K_ROOT = (
-    Path("/opt/scratch/paul/data/BSD35k-CS")
-    if Path("/opt/scratch").exists()
-    else Path.home() / "data" / "BSD35k-CS"
-)
-DEFAULT_BSD2K_ROOT = (
-    Path("/opt/scratch/paul/data/BSD2k")
-    if Path("/opt/scratch").exists()
-    else Path.home() / "data" / "BSD2k"
-)
-DEFAULT_CHECKPOINT_DIR = (
-    Path("/opt/scratch/paul/dcase2026_task1/checkpoints")
-    if Path("/opt/scratch").exists()
-    else Path.home() / "checkpoints"
-)
-
-DEFAULT_OUTPUT_ROOT = (
-    Path("/opt/scratch/paul/dcase2026_task1/training")
-    if Path("/opt/scratch").exists()
-    else Path("outputs/training")
-)
+DEFAULT_CHECKPOINT_DIR = REPOSITORY_ROOT / "checkpoints"
+DEFAULT_OUTPUT_ROOT = REPOSITORY_ROOT / "outpu"
 
 DEFAULT_EMBEDDING_MODEL = "lclap"
 DEFAULT_LLM_EMBEDDING_DIM = 512

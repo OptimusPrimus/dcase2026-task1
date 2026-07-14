@@ -16,12 +16,13 @@ from dcase2026_task1.data.datasets import (
     DEFAULT_BSD10K_ROOT,
     DEFAULT_BSD35K_ROOT,
     DEFAULT_BSD2K_ROOT,
+    DEFAULT_PROCESSED_METADATA_ROOT,
     BSDDataset,
 )
 
 DEFAULT_MODEL_ID = "gpt-5.4-mini"
 DEFAULT_COMPLETION_WINDOW = "24h"
-DEFAULT_OUTPUT_ROOT = "processed_metadata"
+DEFAULT_OUTPUT_ROOT = DEFAULT_PROCESSED_METADATA_ROOT
 REQUESTS_FILENAME = "batch_requests.jsonl"
 INPUT_ROWS_FILENAME = "input_rows.jsonl"
 BATCH_STATE_FILENAME = "batch_state.json"

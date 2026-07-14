@@ -9,26 +9,26 @@ from typing import Any
 import numpy as np
 from torch.utils.data import ConcatDataset, Dataset
 
-DEFAULT_BSD35K_ROOT = Path.home() / "data" / "BSD35k-CS"
-DEFAULT_BSD10K_ROOT = Path.home() / "data" / "BSD10k"
-DEFAULT_BSD2K_ROOT = Path.home() / "data" / "BSD2k"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_DATA_ROOT = REPOSITORY_ROOT / "data"
+DEFAULT_BSD35K_ROOT = DEFAULT_DATA_ROOT / "BSD35k-CS"
+DEFAULT_BSD10K_ROOT = DEFAULT_DATA_ROOT / "BSD10k"
+DEFAULT_BSD2K_ROOT = DEFAULT_DATA_ROOT / "BSD2k"
+DEFAULT_PROCESSED_METADATA_ROOT = DEFAULT_DATA_ROOT / "processed_metadata"
 DEFAULT_BSD10K_METADATA_CLASS_PROBABILITIES_PATH = (
-    Path(__file__).resolve().parent.parent.parent.parent.parent
-    / "processed_metadata"
+    DEFAULT_PROCESSED_METADATA_ROOT
     / "20260611_211801_BSD10k_gpt-5.4-mini_f5706ed2"
     / "predictions.jsonl"
 )
 
 DEFAULT_BSD2K_METADATA_CLASS_PROBABILITIES_PATH = (
-    Path(__file__).resolve().parent.parent.parent.parent.parent
-    / "processed_metadata"
+    DEFAULT_PROCESSED_METADATA_ROOT
     / "20260611_211913_BSD2k_gpt-5.4-mini_b628ef79"
     / "predictions.jsonl"
 )
 
 DEFAULT_BSD35K_METADATA_CLASS_PROBABILITIES_PATH = (
-    Path(__file__).resolve().parent.parent.parent.parent.parent
-    / "processed_metadata"
+    DEFAULT_PROCESSED_METADATA_ROOT
     / "20260611_220253_BSD35k-CS_gpt-5.4-mini_f51027cc"
     / "predictions.jsonl"
 )
@@ -40,22 +40,19 @@ DEFAULT_METADATA_CLASS_PROBABILITIES_PATHS = {
 }
 
 DEFAULT_BSD10K_METADATA_SUMMARY_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "processed_metadata"
+    DEFAULT_PROCESSED_METADATA_ROOT
     / "20260610_234726_BSD10k_gpt-5.4-mini_2ffa7194"
     / "predictions.jsonl"
 )
 
 DEFAULT_BSD2K_METADATA_SUMMARY_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "processed_metadata"
+    DEFAULT_PROCESSED_METADATA_ROOT
     / "20260612_015409_BSD2k_gpt-5.4-mini_3b304142"
     / "predictions.jsonl"
 )
 
 DEFAULT_BSD35K_METADATA_SUMMARY_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "processed_metadata"
+    DEFAULT_PROCESSED_METADATA_ROOT
     / "20260612_021115_BSD35k-CS_gpt-5.4-mini_2f6af3c8"
     / "predictions.jsonl"
 )

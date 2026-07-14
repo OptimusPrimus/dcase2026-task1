@@ -33,8 +33,7 @@ wandb login
 ```
 
 Some embedding backbones use external checkpoints. By default, the training
-script looks for checkpoints in `~/checkpoints` or, on systems with
-`/opt/scratch`, in `/opt/scratch/paul/dcase2026_task1/checkpoints`. You can
+script looks for checkpoints in `checkpoints/` at the repository root. You can
 override this with `--checkpoint-dir`.
 
 ## Data
@@ -51,9 +50,9 @@ here:
 
 By default, the code expects the datasets at:
 
-- `~/data/BSD10k`
-- `~/data/BSD35k-CS`
-- `~/data/BSD2k` for optional BSD2k evaluation/submission workflows
+- `data/BSD10k`
+- `data/BSD35k-CS`
+- `data/BSD2k` for optional BSD2k evaluation/submission workflows
 
 Each dataset root should contain the official `audio/` and `metadata/`
 directories. You can also pass explicit paths:
@@ -64,7 +63,7 @@ python -m dcase2026_task1.experiments.training \
   --bsd35k-root /path/to/BSD35k-CS
 ```
 
-Place the downloaded `processed_metadata/` directory at the repository root.
+Place the downloaded `processed_metadata/` directory under `data/`.
 If you use a different location, update the metadata paths in
 `src/dcase2026_task1/data/datasets.py`.
 
@@ -104,9 +103,8 @@ python -m dcase2026_task1.experiments.training \
 ```
 
 Set `--wandb-mode=offline` or `--wandb-mode=disabled` if you do not want
-online logging. Training outputs are written to `outputs/training` by default,
-or to `/opt/scratch/paul/dcase2026_task1/training` on systems with
-`/opt/scratch`.
+online logging. Training outputs are written to `output/` at the repository root
+by default.
 
 ## Run a Sweep
 
