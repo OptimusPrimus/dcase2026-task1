@@ -1,4 +1,4 @@
-# DCASE 2026 Task 1
+# Broad Sound Taxonomy Classification with Textual Metadata and Crowdsourced Annotations
 
 Code for "Broad Sound Taxonomy Classification with Textual Metadata and Crowdsourced Annotations", currently under review for the DCASE
 Workshop 2026.
