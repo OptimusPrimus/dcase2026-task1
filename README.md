@@ -76,12 +76,12 @@ Run a single training experiment with the default BEATs backbone:
 python -m dcase2026_task1.experiments.training \
   --wandb-project=dcase2026-task1 \
   --wandb-mode=online \
-  --learning-rate=3e-5 \
+  --learning-rate=4e-6 \
   --weight-decay=0.01 \
   --warmup-epochs=1 \
   --lr-decay-start-epoch=1 \
-  --min-learning-rate=1e-6 \
-  --max-epochs=10
+  --min-learning-rate=0 \
+  --max-epochs=30
 ```
 
 Run the LCLAP model with LLM-prior embedding fusion:

@@ -67,7 +67,7 @@ DEFAULT_OUTPUT_ROOT = (
     else Path("outputs/training")
 )
 
-DEFAULT_EMBEDDING_MODEL = "beats"
+DEFAULT_EMBEDDING_MODEL = "lclap"
 DEFAULT_LLM_EMBEDDING_DIM = 512
 PSEUDO_LABEL_FILENAMES = {
     "BSD10k": "bsd10k_logits.npz",
